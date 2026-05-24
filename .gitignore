@@ -1,0 +1,35 @@
+# Environment variables
+.env
+
+# Python virtual environment
+venv/
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Generated voice files
+voices/
+*.mp3
+
+# Local memory files
+marvis_memory.json
+schedule_memory.json
+
+# Backup files
+*.backup
+bot.py.backup*
+*.bak
+
+# OS files
+.DS_Store
+
+# Logs
+*.log
+
+# SSH keys
+*.key
+*.pem
+id_rsa
+id_rsa.pub
