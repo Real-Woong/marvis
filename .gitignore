@@ -33,3 +33,13 @@ bot.py.backup*
 *.pem
 id_rsa
 id_rsa.pub
+
+# Marvis local runtime data
+marvis_memory.json
+marvis_config.json
+marvis_memory.backup*.json
+schedule_memory.json
+*.backup.*
+bot.py.backup*
+voices/
+*.mp3

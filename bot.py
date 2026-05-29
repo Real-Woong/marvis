@@ -1,7 +1,11 @@
 import os
 import re
 import json
+import time
 import logging
+import threading
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -27,6 +31,7 @@ load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+ENV_TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN is missing in .env")
@@ -52,13 +57,21 @@ model = genai.GenerativeModel("gemini-2.5-flash")
 
 
 # -----------------------------
-# Memory setup
+# File / timezone / memory config
 # -----------------------------
 MEMORY_FILE = Path("marvis_memory.json")
+CONFIG_FILE = Path("marvis_config.json")
 VOICE_DIR = Path("voices")
 KST = ZoneInfo("Asia/Seoul")
 
+MAX_MEMORY_ITEMS = 500
+MAX_IDEA_ITEMS = 150
+MAX_RECENT_CONTEXT_ITEMS = 40
 
+
+# -----------------------------
+# Time helpers
+# -----------------------------
 def now_kst() -> datetime:
     return datetime.now(KST)
 
@@ -71,37 +84,87 @@ def now_string() -> str:
     return now_kst().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def load_memory() -> list:
-    if not MEMORY_FILE.exists():
-        return []
+def iso_datetime_kst(dt: datetime) -> str:
+    return dt.astimezone(KST).strftime("%Y-%m-%d %H:%M:%S")
+
+
+# -----------------------------
+# JSON helpers
+# -----------------------------
+def load_json_file(path: Path, default):
+    if not path.exists():
+        return default
 
     try:
-        with open(MEMORY_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-            return data if isinstance(data, list) else []
+            return data
     except Exception:
-        return []
+        return default
+
+
+def save_json_file(path: Path, data) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def load_memory() -> list:
+    data = load_json_file(MEMORY_FILE, [])
+    return data if isinstance(data, list) else []
 
 
 def save_memory(items: list) -> None:
-    with open(MEMORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(items, f, ensure_ascii=False, indent=2)
+    items = optimize_memory_items(items)
+    save_json_file(MEMORY_FILE, items)
 
 
+def load_config() -> dict:
+    data = load_json_file(CONFIG_FILE, {})
+    return data if isinstance(data, dict) else {}
+
+
+def save_config(config: dict) -> None:
+    save_json_file(CONFIG_FILE, config)
+
+
+def save_chat_id(chat_id: int) -> None:
+    config = load_config()
+    config["telegram_chat_id"] = str(chat_id)
+    config["updated_at"] = now_string()
+    save_config(config)
+
+
+def get_chat_id() -> str | None:
+    if ENV_TELEGRAM_CHAT_ID:
+        return ENV_TELEGRAM_CHAT_ID
+
+    config = load_config()
+    chat_id = config.get("telegram_chat_id")
+
+    if chat_id:
+        return str(chat_id)
+
+    return None
+
+
+# -----------------------------
+# Schedule classification and parsing
+# -----------------------------
 def classify_memory(text: str) -> str:
     lowered = text.lower()
 
     schedule_keywords = [
         "일정", "스케쥴", "스케줄", "오늘", "내일", "모레", "이번주", "다음주",
         "해야", "해야해", "해야 돼", "할 일", "할일", "약속", "회의", "미팅",
-        "마감", "기한", "리마인드", "챙겨", "예약", "방문", "제출", "업로드",
-        "정리하기", "확인하기", "처리하기"
+        "마감", "기한", "리마인드", "알림", "알려줘", "챙겨", "예약", "방문",
+        "제출", "업로드", "정리하기", "확인하기", "처리하기", "전화", "연락",
+        "운동", "병원", "공부", "출근", "퇴근", "준비"
     ]
 
     idea_keywords = [
         "아이디어", "생각났", "구상", "기획", "만들고 싶", "프로젝트",
         "서비스", "앱", "개발", "컨셉", "문제의식", "사업", "기능",
-        "구현", "설계", "고도화"
+        "구현", "설계", "고도화", "BM", "비즈니스", "창업"
     ]
 
     if any(keyword in lowered for keyword in schedule_keywords):
@@ -147,7 +210,6 @@ def extract_schedule_date(text: str) -> str | None:
         try:
             schedule_date = datetime(year, month, day, tzinfo=KST).date()
 
-            # If date already passed this year, assume next year
             if schedule_date < today:
                 schedule_date = datetime(year + 1, month, day, tzinfo=KST).date()
 
@@ -165,7 +227,6 @@ def extract_schedule_date(text: str) -> str | None:
         try:
             schedule_date = datetime(year, month, day, tzinfo=KST).date()
 
-            # If date already passed this year, assume next year
             if schedule_date < today:
                 schedule_date = datetime(year + 1, month, day, tzinfo=KST).date()
 
@@ -176,29 +237,87 @@ def extract_schedule_date(text: str) -> str | None:
     return None
 
 
-def add_memory(text: str) -> dict:
-    memories = load_memory()
+def extract_reminder_datetime(text: str, schedule_date: str | None) -> str | None:
+    current = now_kst()
 
-    memory_type = classify_memory(text)
-    schedule_date = extract_schedule_date(text)
+    # 10분 뒤, 30분 후
+    match = re.search(r"(\d{1,3})\s*분\s*(뒤|후)", text)
+    if match:
+        minutes = int(match.group(1))
+        return iso_datetime_kst(current + timedelta(minutes=minutes))
 
-    # If a date is detected, treat it as schedule
+    # 1시간 뒤, 2시간 후
+    match = re.search(r"(\d{1,2})\s*시간\s*(뒤|후)", text)
+    if match:
+        hours = int(match.group(1))
+        return iso_datetime_kst(current + timedelta(hours=hours))
+
     if schedule_date:
-        memory_type = "schedule"
+        try:
+            base_date = datetime.fromisoformat(schedule_date).date()
+        except ValueError:
+            base_date = today_kst_date()
+    else:
+        base_date = today_kst_date()
 
-    item = {
-        "id": len(memories) + 1,
-        "type": memory_type,
-        "content": text.strip(),
-        "schedule_date": schedule_date,
-        "created_at": now_string(),
-        "done": False,
-    }
+    hour = None
+    minute = 0
 
-    memories.append(item)
-    save_memory(memories)
+    # 15:30, 9:00
+    match = re.search(r"(?<!\d)(\d{1,2}):(\d{2})(?!\d)", text)
+    if match:
+        hour = int(match.group(1))
+        minute = int(match.group(2))
 
-    return item
+    # 오후 3시 30분, 오전 9시
+    if hour is None:
+        match = re.search(r"(오전|오후|아침|낮|저녁|밤)?\s*(\d{1,2})\s*시(?:\s*(\d{1,2})\s*분)?", text)
+        if match:
+            meridiem = match.group(1)
+            hour = int(match.group(2))
+            minute = int(match.group(3)) if match.group(3) else 0
+
+            if meridiem in ["오후", "저녁", "밤"] and hour < 12:
+                hour += 12
+
+            if meridiem in ["오전", "아침"] and hour == 12:
+                hour = 0
+
+    if hour is None:
+        return None
+
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        return None
+
+    reminder = datetime(
+        base_date.year,
+        base_date.month,
+        base_date.day,
+        hour,
+        minute,
+        0,
+        tzinfo=KST,
+    )
+
+    # 시간만 있고 이미 지난 시간이면 내일로 처리
+    if not schedule_date and reminder <= current:
+        reminder = reminder + timedelta(days=1)
+
+    return iso_datetime_kst(reminder)
+
+
+# -----------------------------
+# Memory optimization
+# -----------------------------
+def parse_schedule_date(item: dict):
+    schedule_date = item.get("schedule_date")
+    if not schedule_date:
+        return None
+
+    try:
+        return datetime.fromisoformat(schedule_date).date()
+    except ValueError:
+        return None
 
 
 def renumber_memories(memories: list) -> list:
@@ -207,31 +326,96 @@ def renumber_memories(memories: list) -> list:
     return memories
 
 
-def prune_past_schedules() -> int:
-    memories = load_memory()
+def optimize_memory_items(items: list) -> list:
     today = today_kst_date()
 
     kept = []
-    removed_count = 0
 
-    for item in memories:
-        if item.get("type") == "schedule" and item.get("schedule_date"):
-            try:
-                schedule_date = datetime.fromisoformat(item["schedule_date"]).date()
+    for item in items:
+        item_type = item.get("type")
 
-                # Delete past schedules only if not done and date is before today
-                if schedule_date < today:
-                    removed_count += 1
-                    continue
-            except ValueError:
-                pass
+        if item_type == "schedule":
+            schedule_date = parse_schedule_date(item)
+
+            # 지난 날짜의 스케쥴은 삭제
+            if schedule_date and schedule_date < today:
+                continue
 
         kept.append(item)
 
-    kept = renumber_memories(kept)
-    save_memory(kept)
+    # 아이디어가 너무 많으면 오래된 아이디어 일부 정리
+    ideas = [item for item in kept if item.get("type") == "idea"]
+    if len(ideas) > MAX_IDEA_ITEMS:
+        idea_ids_to_keep = set(item.get("id") for item in ideas[-MAX_IDEA_ITEMS:])
+        kept = [
+            item for item in kept
+            if item.get("type") != "idea" or item.get("id") in idea_ids_to_keep
+        ]
 
-    return removed_count
+    # 전체 메모리가 너무 많으면 note부터 오래된 순서로 삭제
+    while len(kept) > MAX_MEMORY_ITEMS:
+        removed = False
+
+        for idx, item in enumerate(kept):
+            if item.get("type") == "note":
+                kept.pop(idx)
+                removed = True
+                break
+
+        if not removed:
+            kept = kept[-MAX_MEMORY_ITEMS:]
+            break
+
+    return renumber_memories(kept)
+
+
+def prune_past_schedules() -> int:
+    before = load_json_file(MEMORY_FILE, [])
+    if not isinstance(before, list):
+        before = []
+
+    after = optimize_memory_items(before)
+    save_json_file(MEMORY_FILE, after)
+
+    return max(0, len(before) - len(after))
+
+
+# -----------------------------
+# Memory manipulation
+# -----------------------------
+def add_memory(text: str) -> dict:
+    memories = load_memory()
+
+    memory_type = classify_memory(text)
+    schedule_date = extract_schedule_date(text)
+    reminder_at = extract_reminder_datetime(text, schedule_date)
+
+    if schedule_date or reminder_at:
+        memory_type = "schedule"
+
+    if reminder_at and not schedule_date:
+        try:
+            schedule_date = datetime.strptime(reminder_at, "%Y-%m-%d %H:%M:%S").date().isoformat()
+        except ValueError:
+            schedule_date = None
+
+    item = {
+        "id": len(memories) + 1,
+        "type": memory_type,
+        "content": text.strip(),
+        "schedule_date": schedule_date,
+        "reminder_at": reminder_at,
+        "reminded": False,
+        "created_at": now_string(),
+        "done": False,
+    }
+
+    memories.append(item)
+    save_memory(memories)
+
+    # reload to reflect renumbering/optimization
+    final_memories = load_memory()
+    return final_memories[-1] if final_memories else item
 
 
 def get_recent_memories(limit: int = 30) -> list:
@@ -267,11 +451,13 @@ def format_memories(items: list) -> str:
     for item in items:
         status = "완료" if item.get("done") else "미완료"
         schedule_date = item.get("schedule_date")
+        reminder_at = item.get("reminder_at")
 
         date_part = f", 일정일: {schedule_date}" if schedule_date else ""
+        reminder_part = f", 알림: {reminder_at}" if reminder_at else ""
 
         lines.append(
-            f"[{item['id']}] ({item.get('type', 'note')}, {status}{date_part}) "
+            f"[{item['id']}] ({item.get('type', 'note')}, {status}{date_part}{reminder_part}) "
             f"{item['content']} "
             f"- 저장시각: {item['created_at']}"
         )
@@ -304,7 +490,9 @@ def format_schedule_by_date() -> str:
         lines.append(f"{schedule_date}")
 
         for item in dated[schedule_date]:
-            lines.append(f"{item['id']}. {item['content']}")
+            reminder_at = item.get("reminder_at")
+            reminder_text = f" / 알림: {reminder_at[11:16]}" if reminder_at else ""
+            lines.append(f"{item['id']}. {item['content']}{reminder_text}")
 
         lines.append("")
 
@@ -331,17 +519,102 @@ def mark_done(memory_id: int) -> bool:
 
 
 def delete_all_memory() -> None:
-    save_memory([])
+    save_json_file(MEMORY_FILE, [])
 
 
 # -----------------------------
-# Core functions
+# Proactive Telegram reminder
+# -----------------------------
+def send_proactive_telegram_message(text: str) -> bool:
+    chat_id = get_chat_id()
+
+    if not chat_id:
+        logging.warning("No Telegram chat_id is saved. Cannot send proactive reminder.")
+        return False
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+
+    data = urllib.parse.urlencode({
+        "chat_id": chat_id,
+        "text": text,
+    }).encode("utf-8")
+
+    try:
+        request = urllib.request.Request(url, data=data, method="POST")
+        with urllib.request.urlopen(request, timeout=10) as response:
+            response.read()
+        return True
+    except Exception as e:
+        logging.exception(f"Failed to send proactive reminder: {e}")
+        return False
+
+
+def reminder_loop():
+    logging.info("Reminder loop started.")
+
+    while True:
+        try:
+            memories = load_memory()
+            current = now_kst()
+            changed = False
+
+            for item in memories:
+                if item.get("type") != "schedule":
+                    continue
+
+                if item.get("done", False):
+                    continue
+
+                if item.get("reminded", False):
+                    continue
+
+                reminder_at = item.get("reminder_at")
+
+                if not reminder_at:
+                    continue
+
+                try:
+                    reminder_dt = datetime.strptime(reminder_at, "%Y-%m-%d %H:%M:%S").replace(tzinfo=KST)
+                except ValueError:
+                    continue
+
+                if reminder_dt <= current:
+                    message = (
+                        "🔔 Marvis Reminder\n\n"
+                        f"지금 예정된 일정입니다.\n"
+                        f"- {item.get('content')}\n\n"
+                        f"알림 시각: {reminder_at}"
+                    )
+
+                    sent = send_proactive_telegram_message(message)
+
+                    if sent:
+                        item["reminded"] = True
+                        item["reminded_at"] = now_string()
+                        changed = True
+
+            if changed:
+                save_memory(memories)
+
+        except Exception as e:
+            logging.exception(f"Reminder loop error: {e}")
+
+        time.sleep(30)
+
+
+def start_reminder_thread():
+    thread = threading.Thread(target=reminder_loop, daemon=True)
+    thread.start()
+
+
+# -----------------------------
+# Gemini response
 # -----------------------------
 def ask_gemini(user_text: str) -> str:
     prune_past_schedules()
 
     active_schedule_context = format_schedule_by_date()
-    recent_memory_context = format_memories(get_recent_memories(limit=40))
+    recent_memory_context = format_memories(get_recent_memories(limit=MAX_RECENT_CONTEXT_ITEMS))
     idea_context = format_memories(get_ideas()[-20:])
 
     prompt = f"""
@@ -358,6 +631,8 @@ Marvis의 핵심 역할:
 - 사용자가 방금 말한 내용도 기억된 것으로 간주하고 답한다.
 - 오늘 날짜 기준은 한국 시간 {today_kst_date().isoformat()} 이다.
 - 지난 날짜의 스케쥴은 자동 정리된 상태라고 가정한다.
+- 알림 시간이 있는 스케쥴은 시간이 되면 Marvis가 먼저 텔레그램으로 알림을 보낸다.
+- 단, 답변에서 알림을 보냈다고 거짓말하지 말고, 저장된 경우에만 "기억해둘게" 정도로 답한다.
 
 현재 날짜별 스케쥴:
 {active_schedule_context}
@@ -404,13 +679,17 @@ async def send_text_and_voice(update: Update, text: str):
 # Telegram handlers
 # -----------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    save_chat_id(update.effective_chat.id)
+
     message = (
         "안녕하세요. 저는 Marvis입니다.\n\n"
         "이제부터 사용자가 보내는 메시지를 기억하고, "
         "일정/아이디어/할 일을 비서처럼 정리해드릴게요.\n\n"
+        "시간이 포함된 일정은 제가 먼저 알림도 보내드립니다.\n\n"
         "예시:\n"
-        "- 내일 BlockTroll 이슈 확인해야 해\n"
-        "- 5.25 Marvis 스케쥴 기능 테스트하기\n"
+        "- 내일 오후 3시에 병원 예약 확인해야 해\n"
+        "- 10분 뒤 물 마시라고 알려줘\n"
+        "- 5.25 09:00 GitHub README 정리하기\n"
         "- 방금 새 프로젝트 아이디어가 생각났어\n"
         "- 내가 오늘 뭐 해야 해?\n\n"
         "명령어:\n"
@@ -425,13 +704,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    save_chat_id(update.effective_chat.id)
+
     message = (
         "Marvis 사용 방법:\n\n"
         "1. 그냥 말하면 됩니다.\n"
         "예: 내일 병원 예약 확인해야 해\n\n"
-        "2. 날짜 지정도 가능합니다.\n"
-        "예: 5.25 GitHub README 정리하기\n"
-        "예: 5월 26일 Marvis 기능 테스트하기\n\n"
+        "2. 시간 알림도 가능합니다.\n"
+        "예: 오늘 오후 8시에 운동하라고 알려줘\n"
+        "예: 30분 뒤 물 마시라고 알려줘\n"
+        "예: 5.25 09:00 GitHub README 정리하기\n\n"
         "3. 날짜별 스케쥴 확인\n"
         "!스케쥴\n"
         "또는 /schedule\n\n"
@@ -450,23 +732,31 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    save_chat_id(update.effective_chat.id)
+
     recent_items = get_recent_memories(limit=20)
     text = "최근 저장된 기억입니다:\n\n" + format_memories(recent_items)
     await send_text_and_voice(update, text)
 
 
 async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    save_chat_id(update.effective_chat.id)
+
     text = format_schedule_by_date()
     await send_text_and_voice(update, text)
 
 
 async def ideas_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    save_chat_id(update.effective_chat.id)
+
     idea_items = get_ideas()[-20:]
     text = "최근 저장된 아이디어입니다:\n\n" + format_memories(idea_items)
     await send_text_and_voice(update, text)
 
 
 async def done_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    save_chat_id(update.effective_chat.id)
+
     if not context.args:
         await update.message.reply_text("완료 처리할 번호를 입력해주세요. 예: /done 1")
         return
@@ -486,11 +776,15 @@ async def done_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def forget_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    save_chat_id(update.effective_chat.id)
+
     delete_all_memory()
     await update.message.reply_text("Marvis의 전체 기억을 삭제했습니다.")
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    save_chat_id(update.effective_chat.id)
+
     user_text = update.message.text.strip()
 
     if not user_text:
@@ -503,10 +797,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_text_and_voice(update, text)
         return
 
-    # Save every user message as memory
-    add_memory(user_text)
+    saved_item = add_memory(user_text)
 
-    await update.message.reply_text("기억하고 생각 중입니다...")
+    if saved_item.get("reminder_at"):
+        await update.message.reply_text(
+            f"기억했습니다. 알림 시각: {saved_item['reminder_at']}"
+        )
+    else:
+        await update.message.reply_text("기억하고 생각 중입니다...")
 
     try:
         answer = ask_gemini(user_text)
@@ -518,6 +816,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
+    start_reminder_thread()
+
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -530,7 +830,7 @@ def main():
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    print("Marvis bot is running with memory and schedule mode...")
+    print("Marvis bot is running with memory, schedule, reminder, and optimization mode...")
     app.run_polling()
 
 
