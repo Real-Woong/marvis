@@ -4,7 +4,7 @@ from datetime import datetime
 
 from .schedule_parser import classify_memory, extract_reminder_datetime, extract_schedule_date
 from .settings import MAX_IDEA_ITEMS, MAX_MEMORY_ITEMS, MEMORY_FILE
-from .storage import load_json_file, load_raw_memory, save_raw_memory
+from .storage import load_json_file, load_raw_memory, memory_lock, save_raw_memory
 from .time_utils import now_string, today_kst_date
 
 
@@ -70,17 +70,17 @@ def save_memory(items: list) -> None:
 
 def prune_past_schedules() -> int:
     """지난 날짜의 일정을 제거하고 제거한 개수를 반환합니다."""
-    before = load_json_file(MEMORY_FILE, [])
-    if not isinstance(before, list):
-        before = []
-    after = optimize_memory_items(before)
-    save_raw_memory(after)
-    return max(0, len(before) - len(after))
+    with memory_lock:
+        before = load_json_file(MEMORY_FILE, [])
+        if not isinstance(before, list):
+            before = []
+        after = optimize_memory_items(before)
+        save_raw_memory(after)
+        return max(0, len(before) - len(after))
 
 
 def add_memory(text: str) -> dict:
     """메시지를 분류하고 날짜·알림 정보를 붙여 새 기억으로 저장합니다."""
-    memories = load_memory()
     memory_type = classify_memory(text)
     schedule_date = extract_schedule_date(text)
     reminder_at = extract_reminder_datetime(text, schedule_date)
@@ -92,20 +92,22 @@ def add_memory(text: str) -> dict:
         except ValueError:
             schedule_date = None
 
-    item = {
-        "id": len(memories) + 1,
-        "type": memory_type,
-        "content": text.strip(),
-        "schedule_date": schedule_date,
-        "reminder_at": reminder_at,
-        "reminded": False,
-        "created_at": now_string(),
-        "done": False,
-    }
-    memories.append(item)
-    save_memory(memories)
-    final_memories = load_memory()
-    return final_memories[-1] if final_memories else item
+    with memory_lock:
+        memories = load_memory()
+        item = {
+            "id": len(memories) + 1,
+            "type": memory_type,
+            "content": text.strip(),
+            "schedule_date": schedule_date,
+            "reminder_at": reminder_at,
+            "reminded": False,
+            "created_at": now_string(),
+            "done": False,
+        }
+        memories.append(item)
+        save_memory(memories)
+        final_memories = load_memory()
+        return final_memories[-1] if final_memories else item
 
 
 def get_recent_memories(limit: int = 30) -> list:
@@ -171,16 +173,18 @@ def format_schedule_by_date() -> str:
 
 def mark_done(memory_id: int) -> bool:
     """지정한 기억 항목을 완료 처리하고 성공 여부를 반환합니다."""
-    memories = load_memory()
-    for item in memories:
-        if item.get("id") == memory_id:
-            item["done"] = True
-            item["done_at"] = now_string()
-            save_memory(memories)
-            return True
-    return False
+    with memory_lock:
+        memories = load_memory()
+        for item in memories:
+            if item.get("id") == memory_id:
+                item["done"] = True
+                item["done_at"] = now_string()
+                save_memory(memories)
+                return True
+        return False
 
 
 def delete_all_memory() -> None:
     """저장된 전체 기억을 비웁니다."""
-    save_raw_memory([])
+    with memory_lock:
+        save_raw_memory([])

@@ -1,10 +1,16 @@
 """기억과 설정 데이터를 JSON 파일로 읽고 저장합니다."""
 
 import json
+import threading
 from pathlib import Path
 
 from .settings import CONFIG_FILE, ENV_TELEGRAM_CHAT_ID, MEMORY_FILE
 from .time_utils import now_string
+
+
+# 알림 스레드(reminders.py)와 텔레그램 핸들러가 동시에 같은 메모리 파일을
+# read-modify-write 하면서 서로의 변경을 덮어쓰지 않도록 하나의 락을 공유합니다.
+memory_lock = threading.RLock()
 
 
 def load_json_file(path: Path, default):
@@ -19,9 +25,15 @@ def load_json_file(path: Path, default):
 
 
 def save_json_file(path: Path, data) -> None:
-    """한글을 그대로 보존해 JSON 데이터를 저장합니다."""
-    with path.open("w", encoding="utf-8") as file:
+    """한글을 그대로 보존해 JSON 데이터를 저장합니다.
+
+    쓰는 도중 다른 스레드가 읽어 깨진 JSON을 만나지 않도록 임시 파일에 쓴 뒤
+    같은 파일시스템 내에서 원자적으로 교체합니다.
+    """
+    tmp_path = path.with_name(f"{path.name}.tmp")
+    with tmp_path.open("w", encoding="utf-8") as file:
         json.dump(data, file, ensure_ascii=False, indent=2)
+    tmp_path.replace(path)
 
 
 def load_raw_memory() -> list:
