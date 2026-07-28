@@ -52,7 +52,18 @@ The server was configured using an Oracle Always Free eligible instance.
 Project Structure
 
 marvis-bot/
-├── bot.py
+├── bot.py                 # Application entry point
+├── marvis/
+│   ├── app.py             # Telegram application setup
+│   ├── handlers.py        # Commands and message handlers
+│   ├── ai.py              # Gemini response generation
+│   ├── memory.py          # Memory management and formatting
+│   ├── schedule_parser.py # Date/time parsing and classification
+│   ├── reminders.py       # Proactive reminder loop
+│   ├── voice.py           # Korean TTS responses
+│   ├── storage.py         # JSON persistence
+│   ├── settings.py        # Environment and path settings
+│   └── time_utils.py      # Korea-time helpers
 ├── requirements.txt
 ├── README.md
 ├── .env.example
@@ -69,6 +80,18 @@ GEMINI_API_KEY=your_gemini_api_key_here
 Do not commit the .env file to GitHub because it contains sensitive credentials.
 
 Installation
+
+Local development on this Mac uses the shared AI environment:
+
+```bash
+source /Users/kim_jinwoong/Desktop/project/Project_AI/_venvs/ai/bin/activate
+python bot.py
+```
+
+VS Code is configured to select this interpreter automatically. Do not create a
+project-local `venv` or `.venv` directory.
+
+Server installation:
 
 1. Connect to the server
 
@@ -311,7 +334,18 @@ User: ubuntu
 프로젝트 구조
 
 marvis-bot/
-├── bot.py
+├── bot.py                 # 실행 진입점
+├── marvis/
+│   ├── app.py             # Telegram 애플리케이션 구성
+│   ├── handlers.py        # 명령어 및 메시지 핸들러
+│   ├── ai.py              # Gemini 답변 생성
+│   ├── memory.py          # 기억 관리 및 출력 형식
+│   ├── schedule_parser.py # 일정 분류와 날짜·시간 파싱
+│   ├── reminders.py       # 능동 알림 루프
+│   ├── voice.py           # 한국어 음성 답변
+│   ├── storage.py         # JSON 데이터 저장
+│   ├── settings.py        # 환경 변수 및 경로 설정
+│   └── time_utils.py      # 한국 시간 유틸리티
 ├── requirements.txt
 ├── README.md
 ├── .env.example

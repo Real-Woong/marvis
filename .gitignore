@@ -1,45 +1,16 @@
-# Environment variables
-.env
-
-# Python virtual environment
+# Local Python environment and caches
 venv/
 .venv/
-
-# Python cache
 __pycache__/
 *.py[cod]
 
-# Generated voice files
-voices/
-*.mp3
+# Local secrets
+.env
+.env.*
+!.env.example
 
-# Local memory files
-marvis_memory.json
-schedule_memory.json
+# Generated runtime files
+voices/*.mp3
 
-# Backup files
-*.backup
-bot.py.backup*
-*.bak
-
-# OS files
+# macOS
 .DS_Store
-
-# Logs
-*.log
-
-# SSH keys
-*.key
-*.pem
-id_rsa
-id_rsa.pub
-
-# Marvis local runtime data
-marvis_memory.json
-marvis_config.json
-marvis_memory.backup*.json
-schedule_memory.json
-*.backup.*
-bot.py.backup*
-voices/
-*.mp3

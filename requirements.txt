@@ -1,4 +1,4 @@
-python-telegram-bot
-google-generativeai
-gTTS
-python-dotenv
+python-telegram-bot==22.7
+google-generativeai==0.8.6
+gTTS==2.5.4
+python-dotenv==1.2.2
