@@ -35,6 +35,14 @@ class _CaptureHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_GET(self) -> None:
+        # 인증 없이 살아있는지만 확인하는 용도라 비밀 정보를 노출하지 않습니다.
+        # 나중에 외부 업타임 모니터링(UptimeRobot 등)을 붙일 때 사용합니다.
+        if self.path == "/health":
+            self._respond(200, {"ok": True})
+            return
+        self._respond(404, {"error": "not found"})
+
     def do_POST(self) -> None:
         if self.path != "/capture":
             self._respond(404, {"error": "not found"})
