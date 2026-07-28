@@ -23,6 +23,12 @@ TELEGRAM_ALLOWED_USER_ID = os.getenv(
     "TELEGRAM_ALLOWED_USER_ID"
 )
 
+# iPhone 단축어(Siri)가 텍스트를 보낼 로컬 전용 웹훅. Cloudflare Tunnel이
+# 이 포트만 외부에 중계하므로 기본값은 localhost 바인딩입니다.
+SIRI_SHORTCUT_SECRET = os.getenv("SIRI_SHORTCUT_SECRET")
+SIRI_WEBHOOK_HOST = os.getenv("SIRI_WEBHOOK_HOST", "127.0.0.1")
+SIRI_WEBHOOK_PORT = int(os.getenv("SIRI_WEBHOOK_PORT", "8081"))
+
 MEMORY_FILE = BASE_DIR / "marvis_memory.json"
 CONFIG_FILE = BASE_DIR / "marvis_config.json"
 VOICE_DIR = BASE_DIR / "voices"

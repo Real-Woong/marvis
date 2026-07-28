@@ -16,6 +16,7 @@ from .handlers import (
 )
 from .reminders import start_reminder_thread
 from .settings import TELEGRAM_BOT_TOKEN, validate_required_settings
+from .webhook import start_webhook_server
 
 
 def main() -> None:
@@ -26,6 +27,7 @@ def main() -> None:
         level=logging.INFO,
     )
     start_reminder_thread()
+    start_webhook_server()
     # 명령어 핸들러를 먼저 등록하고 마지막에 일반 텍스트를 처리합니다.
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
