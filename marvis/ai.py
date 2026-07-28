@@ -60,3 +60,30 @@ Marvis의 핵심 역할:
     if not response.text:
         return "죄송합니다. 답변을 생성하지 못했습니다."
     return response.text.strip()
+
+
+def generate_morning_briefing() -> str:
+    """사용자가 묻지 않아도 먼저 보내는 아침 브리핑 메시지를 생성합니다."""
+    # ask_gemini와 달리 사용자 메시지가 없는 능동 발화이므로, 질문에 답하는
+    # 대신 오늘 일정을 요약해서 먼저 브리핑하라고 역할을 명확히 지정합니다.
+    prune_past_schedules()
+    active_schedules = format_schedule_by_date()
+    prompt = f"""
+너는 사용자의 개인 비서 'Marvis'야.
+지금은 한국 시간 {today_kst_date().isoformat()} 아침이고, 사용자가 하루를 시작하기 전에
+네가 먼저 말을 걸어서 오늘 브리핑을 해주는 상황이야. 사용자는 아직 아무것도 묻지 않았어.
+
+브리핑 원칙:
+- 오늘 예정된 일정과 할 일을 우선순위 순으로 정리해서 알려준다.
+- 오늘 일정이 하나도 없으면 "오늘은 저장된 일정이 없다"고 짧게만 말한다.
+- 잔소리하듯 늘어놓지 말고, 비서가 아침에 브리핑하듯 담백하게 핵심만 말한다.
+- 너무 길지 않게, 소리 내어 들어도 바로 이해되도록 말한다.
+- 답변은 한국어로 한다.
+
+오늘 날짜별 스케쥴:
+{active_schedules}
+"""
+    response = get_model().generate_content(prompt)
+    if not response.text:
+        return "오늘 브리핑을 생성하지 못했습니다."
+    return response.text.strip()

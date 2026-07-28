@@ -57,10 +57,11 @@ def save_config(config: dict) -> None:
 
 def save_chat_id(chat_id: int) -> None:
     """능동 알림을 보낼 최근 Telegram 채팅 ID를 저장합니다."""
-    config = load_config()
-    config["telegram_chat_id"] = str(chat_id)
-    config["updated_at"] = now_string()
-    save_config(config)
+    with memory_lock:
+        config = load_config()
+        config["telegram_chat_id"] = str(chat_id)
+        config["updated_at"] = now_string()
+        save_config(config)
 
 
 def get_chat_id() -> str | None:
@@ -69,3 +70,17 @@ def get_chat_id() -> str | None:
         return ENV_TELEGRAM_CHAT_ID
     chat_id = load_config().get("telegram_chat_id")
     return str(chat_id) if chat_id else None
+
+
+def get_last_briefing_date() -> str | None:
+    """마지막으로 아침 브리핑을 보낸 날짜(YYYY-MM-DD)를 반환합니다."""
+    return load_config().get("last_briefing_date")
+
+
+def save_last_briefing_date(date_str: str) -> None:
+    """봇 재시작 후에도 같은 날 브리핑이 중복 발송되지 않도록 날짜를 기록합니다."""
+    with memory_lock:
+        config = load_config()
+        config["last_briefing_date"] = date_str
+        config["updated_at"] = now_string()
+        save_config(config)

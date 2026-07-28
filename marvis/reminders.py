@@ -7,9 +7,10 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 
+from .ai import generate_morning_briefing
 from .memory import load_memory, save_memory
-from .settings import KST, TELEGRAM_BOT_TOKEN
-from .storage import get_chat_id, memory_lock
+from .settings import KST, MORNING_BRIEFING_HOUR, MORNING_BRIEFING_MINUTE, TELEGRAM_BOT_TOKEN
+from .storage import get_chat_id, get_last_briefing_date, memory_lock, save_last_briefing_date
 from .time_utils import now_kst, now_string
 
 
@@ -35,17 +36,36 @@ def send_proactive_telegram_message(text: str) -> bool:
         return False
 
 
+def send_morning_briefing_if_due(current: datetime) -> None:
+    """설정된 시각이 지났고 오늘 아직 안 보냈다면 아침 브리핑을 생성해 보냅니다."""
+    today = current.date().isoformat()
+    if get_last_briefing_date() == today:
+        return
+    if (current.hour, current.minute) < (MORNING_BRIEFING_HOUR, MORNING_BRIEFING_MINUTE):
+        return
+    try:
+        briefing = generate_morning_briefing()
+    except Exception as error:
+        logging.exception("Failed to generate morning briefing: %s", error)
+        return
+    message = f"☀️ Marvis 아침 브리핑\n\n{briefing}"
+    if send_proactive_telegram_message(message):
+        save_last_briefing_date(today)
+
+
 def reminder_loop() -> None:
-    """30초마다 미발송 일정을 검사하는 백그라운드 반복 작업입니다."""
+    """30초마다 미발송 일정과 아침 브리핑 조건을 검사하는 백그라운드 반복 작업입니다."""
     logging.info("Reminder loop started.")
     while True:
         try:
+            current = now_kst()
+            send_morning_briefing_if_due(current)
+
             # 파일을 읽는 동안만 잠그고, 네트워크 전송(최대 10초)은 락 밖에서
             # 수행해 텔레그램 핸들러가 그동안 기억 파일에 접근하지 못하는
             # 상황을 피합니다.
             with memory_lock:
                 memories = load_memory()
-            current = now_kst()
             due_items = []
             # 완료됐거나 이미 알린 일정은 중복 발송하지 않습니다.
             for item in memories:
