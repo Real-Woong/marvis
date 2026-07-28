@@ -9,6 +9,10 @@ __pycache__/
 .env.*
 !.env.example
 
+# Personal runtime data (chat id, memories, schedules)
+marvis_memory.json
+marvis_config.json
+
 # Generated runtime files
 voices/*.mp3
 
