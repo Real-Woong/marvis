@@ -121,6 +121,11 @@ def extract_next_steps_content(text: str) -> str | None:
     return content or None
 
 
+def to_speech_friendly_name(name: str) -> str:
+    """BubbleBreak처럼 붙여 쓴 영문 이름에 띄어쓰기를 넣어 Siri가 자연스럽게 읽게 합니다."""
+    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", name)
+
+
 def format_active_projects() -> str:
     """진행중 프로젝트와 다음 할 일만 간단히 나열합니다(아침 브리핑용)."""
     active = get_active_projects()
