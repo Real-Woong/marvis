@@ -54,7 +54,7 @@ def send_morning_briefing_if_due(current: datetime) -> None:
         logging.exception("Failed to generate morning briefing: %s", error)
         return
 
-    message = f"☀️ Marvis 아침 브리핑\n\n{briefing}"
+    message = f"좋은 아침입니다 마비스 매니저입니다. {briefing}"
     if not send_proactive_telegram_message(message):
         return
 
