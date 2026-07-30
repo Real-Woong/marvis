@@ -17,6 +17,8 @@ ACTION_ADD = "add"
 ACTION_STOP = "stop"
 ACTION_PAUSE = "pause"
 ACTION_NEXT_STEPS = "next_steps"
+ACTION_MUTE_BRIEFING = "mute_briefing"
+ACTION_UNMUTE_BRIEFING = "unmute_briefing"
 
 # '프로젝트'와 붙어 있는 단어를 이름으로 오인하지 않도록 걸러내는 동작어입니다.
 _NAME_STOPWORDS = {
@@ -25,6 +27,7 @@ _NAME_STOPWORDS = {
     "수정해줘", "수정",
     "다음할일은", "다음", "할일은", "할일",
     "잠깐", "잠시", "멈출게", "멈춰", "일시정지",
+    "브리핑에서", "브리핑", "빼줘", "제외해줘", "제외",
 }
 
 
@@ -50,6 +53,11 @@ def get_active_projects() -> list:
 
 def get_stopped_projects() -> list:
     return [item for item in load_projects() if item.get("status") == STATUS_STOPPED]
+
+
+def get_briefing_projects() -> list:
+    """아침 브리핑에 읽어줄 진행중 프로젝트만 반환합니다(음소거된 프로젝트는 제외)."""
+    return [item for item in get_active_projects() if not item.get("muted_from_briefing")]
 
 
 def find_project_by_name(name: str) -> dict | None:
@@ -95,6 +103,14 @@ def detect_project_action(text: str) -> str | None:
 
     normalized = " ".join(text.lower().split())
     compact = normalized.replace(" ", "")
+
+    if "브리핑" in normalized:
+        unmute_words = ("다시 넣어", "다시 포함", "포함해줘", "다시 알려", "다시 보내")
+        mute_words = ("빼줘", "빼줄", "제외", "안 나오게", "그만 보내", "안 보내")
+        if any(w in normalized for w in unmute_words):
+            return ACTION_UNMUTE_BRIEFING
+        if any(w in normalized for w in mute_words):
+            return ACTION_MUTE_BRIEFING
 
     pause_time_words = ("잠깐", "잠시")
     pause_stop_words = ("멈추", "멈출", "멈춰", "정지")
@@ -199,6 +215,7 @@ def update_project(
     sub_status: str | None = None,
     next_steps: str | None = None,
     note: str | None = None,
+    muted_from_briefing: bool | None = None,
 ) -> bool:
     """번호로 프로젝트를 찾아 전달된 필드만 갱신합니다."""
     with memory_lock:
@@ -217,6 +234,8 @@ def update_project(
                 item["next_steps"] = next_steps
             if note is not None:
                 item["note"] = note
+            if muted_from_briefing is not None:
+                item["muted_from_briefing"] = muted_from_briefing
             item["updated_at"] = now_string()
             save_projects(projects)
             return True

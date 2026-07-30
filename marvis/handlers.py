@@ -18,9 +18,11 @@ from .memory import (
 )
 from .projects import (
     ACTION_ADD,
+    ACTION_MUTE_BRIEFING,
     ACTION_NEXT_STEPS,
     ACTION_PAUSE,
     ACTION_STOP,
+    ACTION_UNMUTE_BRIEFING,
     STATUSES,
     STATUS_IN_PROGRESS,
     STATUS_STOPPED,
@@ -246,6 +248,12 @@ async def handle_text(
                 return
             update_project(project["id"], next_steps=content)
             await update.message.reply_text(f"'{project['name']}'의 다음 할 일을 갱신했습니다: {content}")
+        elif project_action == ACTION_MUTE_BRIEFING:
+            update_project(project["id"], muted_from_briefing=True)
+            await update.message.reply_text(f"'{project['name']}'을(를) 아침 브리핑에서 제외했습니다.")
+        elif project_action == ACTION_UNMUTE_BRIEFING:
+            update_project(project["id"], muted_from_briefing=False)
+            await update.message.reply_text(f"'{project['name']}'을(를) 아침 브리핑에 다시 포함했습니다.")
         return
 
     intent = detect_message_intent(user_text)

@@ -9,7 +9,7 @@ from datetime import datetime
 
 from .ai import generate_morning_briefing
 from .memory import load_memory, save_memory
-from .projects import get_active_projects, to_speech_friendly_name
+from .projects import get_briefing_projects, to_speech_friendly_name
 from .settings import KST, MORNING_BRIEFING_HOUR, MORNING_BRIEFING_MINUTE, TELEGRAM_BOT_TOKEN
 from .storage import get_chat_id, get_last_briefing_date, memory_lock, save_last_briefing_date
 from .time_utils import now_kst, now_string
@@ -58,7 +58,7 @@ def send_morning_briefing_if_due(current: datetime) -> None:
     if not send_proactive_telegram_message(message):
         return
 
-    for project in get_active_projects():
+    for project in get_briefing_projects():
         time.sleep(PROJECT_MESSAGE_INTERVAL_SECONDS)
         next_steps = project.get("next_steps") or "다음 할 일 미정"
         speech_name = to_speech_friendly_name(project["name"])
