@@ -10,7 +10,7 @@ from datetime import datetime
 from .ai import generate_morning_briefing
 from .memory import load_memory, save_memory
 from .projects import get_briefing_projects, to_speech_friendly_name
-from .settings import KST, MORNING_BRIEFING_HOUR, MORNING_BRIEFING_MINUTE, TELEGRAM_BOT_TOKEN
+from .settings import KST, TELEGRAM_BOT_TOKEN
 from .storage import get_chat_id, get_last_briefing_date, memory_lock, save_last_briefing_date
 from .time_utils import now_kst, now_string
 
@@ -46,7 +46,15 @@ def send_morning_briefing_if_due(current: datetime) -> None:
     today = current.date().isoformat()
     if get_last_briefing_date() == today:
         return
-    if (current.hour, current.minute) < (MORNING_BRIEFING_HOUR, MORNING_BRIEFING_MINUTE):
+    weekday = current.weekday()  # 월=0 ... 일=6
+    if weekday == 6:
+        return  # 일요일은 브리핑 없음
+    if weekday == 5:
+        hour, minute = 10, 0  # 토요일
+    else:
+        hour, minute = 8, 30  # 월~금
+
+    if (current.hour, current.minute) < (hour, minute):
         return
     try:
         briefing = generate_morning_briefing()

@@ -39,10 +39,6 @@ MAX_MEMORY_ITEMS = 500
 MAX_IDEA_ITEMS = 150
 MAX_RECENT_CONTEXT_ITEMS = 40
 
-# 아침 브리핑을 먼저 보낼 한국 시간 기준 시각입니다.
-MORNING_BRIEFING_HOUR = 8
-MORNING_BRIEFING_MINUTE = 0
-
 
 def validate_required_settings() -> None:
     """봇 실행에 반드시 필요한 인증 정보가 있는지 확인합니다."""
