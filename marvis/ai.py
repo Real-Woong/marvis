@@ -3,7 +3,7 @@
 import google.generativeai as genai
 
 from .memory import format_memories, format_schedule_by_date, get_ideas, get_recent_memories, prune_past_schedules
-from .projects import format_active_projects, format_all_projects
+from .projects import format_all_projects
 from .settings import GEMINI_API_KEY, MAX_RECENT_CONTEXT_ITEMS
 from .time_utils import today_kst_date
 
@@ -71,31 +71,29 @@ Marvis의 핵심 역할:
 
 
 def generate_morning_briefing() -> str:
-    """사용자가 묻지 않아도 먼저 보내는 아침 브리핑 메시지를 생성합니다."""
+    """사용자가 묻지 않아도 먼저 보내는 아침 브리핑 중 일정 요약 부분을 생성합니다.
+
+    프로젝트 현황은 Siri "알림 읽어주기"가 긴 메시지를 요약해버리는 것을 피하려고
+    이 함수에 포함하지 않고, 호출부(reminders.py)에서 프로젝트당 별도 메시지로 보낸다.
+    """
     # ask_gemini와 달리 사용자 메시지가 없는 능동 발화이므로, 질문에 답하는
     # 대신 오늘 일정을 요약해서 먼저 브리핑하라고 역할을 명확히 지정합니다.
     prune_past_schedules()
     active_schedules = format_schedule_by_date()
-    active_projects = format_active_projects()
     prompt = f"""
 너는 사용자의 개인 비서 'Marvis'야.
 지금은 한국 시간 {today_kst_date().isoformat()} 아침이고, 사용자가 하루를 시작하기 전에
-네가 먼저 말을 걸어서 오늘 브리핑을 해주는 상황이야. 사용자는 아직 아무것도 묻지 않았어.
+네가 먼저 말을 걸어서 오늘 일정을 브리핑해주는 상황이야. 사용자는 아직 아무것도 묻지 않았어.
 
 브리핑 원칙:
 - 오늘 예정된 일정과 할 일을 우선순위 순으로 정리해서 알려준다.
 - 오늘 일정이 하나도 없으면 "오늘은 저장된 일정이 없다"고 짧게만 말한다.
-- 일정 브리핑 다음에, 현재 진행중인 사이드 프로젝트와 각 프로젝트의 다음 할 일을
-  짧게 이어서 알려준다. 진행중 프로젝트가 없으면 이 부분은 생략한다.
 - 잔소리하듯 늘어놓지 말고, 비서가 아침에 브리핑하듯 담백하게 핵심만 말한다.
 - 너무 길지 않게, 소리 내어 들어도 바로 이해되도록 말한다.
 - 답변은 한국어로 한다.
 
 오늘 날짜별 스케쥴:
 {active_schedules}
-
-진행중인 프로젝트:
-{active_projects}
 """
     response = get_model().generate_content(prompt)
     if not response.text:

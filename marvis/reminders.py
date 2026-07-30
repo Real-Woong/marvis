@@ -9,9 +9,14 @@ from datetime import datetime
 
 from .ai import generate_morning_briefing
 from .memory import load_memory, save_memory
+from .projects import get_active_projects
 from .settings import KST, MORNING_BRIEFING_HOUR, MORNING_BRIEFING_MINUTE, TELEGRAM_BOT_TOKEN
 from .storage import get_chat_id, get_last_briefing_date, memory_lock, save_last_briefing_date
 from .time_utils import now_kst, now_string
+
+# Siri "알림 읽어주기"가 메시지 하나를 다 읽어주도록, 프로젝트 현황은 스케쥴과
+# 합치지 않고 프로젝트당 별도 메시지로 몇 초 간격을 두고 보낸다.
+PROJECT_MESSAGE_INTERVAL_SECONDS = 3
 
 
 def send_proactive_telegram_message(text: str) -> bool:
@@ -48,9 +53,17 @@ def send_morning_briefing_if_due(current: datetime) -> None:
     except Exception as error:
         logging.exception("Failed to generate morning briefing: %s", error)
         return
+
     message = f"☀️ Marvis 아침 브리핑\n\n{briefing}"
-    if send_proactive_telegram_message(message):
-        save_last_briefing_date(today)
+    if not send_proactive_telegram_message(message):
+        return
+
+    for project in get_active_projects():
+        time.sleep(PROJECT_MESSAGE_INTERVAL_SECONDS)
+        next_steps = project.get("next_steps") or "다음 할 일 미정"
+        send_proactive_telegram_message(f"📌 {project['name']}: {next_steps}")
+
+    save_last_briefing_date(today)
 
 
 def reminder_loop() -> None:
