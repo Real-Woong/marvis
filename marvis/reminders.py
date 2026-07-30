@@ -16,7 +16,7 @@ from .time_utils import now_kst, now_string
 
 # Siri "알림 읽어주기"가 메시지 하나를 다 읽어주도록, 프로젝트 현황은 스케쥴과
 # 합치지 않고 프로젝트당 별도 메시지로 몇 초 간격을 두고 보낸다.
-PROJECT_MESSAGE_INTERVAL_SECONDS = 3
+PROJECT_MESSAGE_INTERVAL_SECONDS = 5
 
 
 def send_proactive_telegram_message(text: str) -> bool:
