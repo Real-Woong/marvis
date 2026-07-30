@@ -20,3 +20,6 @@ voices/*.mp3
 
 # macOS
 .DS_Store
+
+# cloudflare tunnel client 설치 패키지
+*.deb
