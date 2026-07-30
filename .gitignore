@@ -13,6 +13,7 @@ __pycache__/
 marvis_memory.json
 marvis_config.json
 marvis_projects.json
+project_memory.json
 
 # Generated runtime files
 voices/*.mp3

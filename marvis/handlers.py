@@ -16,7 +16,23 @@ from .memory import (
     mark_done,
     prune_past_schedules,
 )
-from .projects import STATUSES, STATUS_STOPPED, SUB_STATUS_OPTIONS, format_all_projects, update_project
+from .projects import (
+    ACTION_ADD,
+    ACTION_NEXT_STEPS,
+    ACTION_PAUSE,
+    ACTION_STOP,
+    STATUSES,
+    STATUS_IN_PROGRESS,
+    STATUS_STOPPED,
+    SUB_STATUS_OPTIONS,
+    add_project,
+    detect_project_action,
+    extract_next_steps_content,
+    extract_project_name,
+    find_project_by_name,
+    format_all_projects,
+    update_project,
+)
 from .schedule_parser import detect_message_intent
 from .storage import save_chat_id
 from .voice import send_text_and_voice
@@ -35,7 +51,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "- 10분 뒤 물 마시라고 알려줘\n"
         "- 5.25 09:00 GitHub README 정리하기\n"
         "- 방금 새 프로젝트 아이디어가 생각났어\n"
-        "- 내가 오늘 뭐 해야 해?\n\n"
+        "- 내가 오늘 뭐 해야 해?\n"
+        "- OO프로젝트 시작할거야 새로 추가해줘\n"
+        "- 프로젝트OO 중단으로 수정해줘\n"
+        "- 프로젝트OO 다음할일은 배포 확인이야\n"
+        "- 프로젝트OO 잠깐 멈출게\n\n"
         "명령어:\n"
         "!스케쥴 - 날짜별 스케쥴 확인\n"
         "/memory - 최근 기억 확인\n"
@@ -64,7 +84,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "6. 완료 처리\n/done 1\n\n"
         "7. 전체 기억 삭제\n/forget_all_marvis\n\n"
         "8. 프로젝트 진행 상태 확인\n/projects 또는 \"프로젝트 스케쥴\", \"프로젝트 할일\"이라고 물어보기\n\n"
-        "9. 프로젝트 상태/할 일 갱신\n/project_update 1 진행중 다음 할 일 내용\n\n"
+        "9. 프로젝트 상태/할 일 갱신\n"
+        "말로 하면 됩니다.\n"
+        "예: OO프로젝트 시작할거야 새로 추가해줘\n"
+        "예: 프로젝트OO 중단으로 수정해줘\n"
+        "예: 프로젝트OO 다음할일은 배포 확인이야\n"
+        "예: 프로젝트OO 잠깐 멈출게\n"
+        "또는 /project_update 1 진행중 다음 할 일 내용\n\n"
         "주의: 일반 메시지도 기억에 저장되며 지난 날짜의 스케쥴은 자동 정리됩니다."
     )
     await update.message.reply_text(message)
@@ -188,6 +214,38 @@ async def handle_text(
             update,
             format_all_projects(),
         )
+        return
+
+    project_action = detect_project_action(user_text)
+    if project_action:
+        project_name = extract_project_name(user_text)
+        if not project_name:
+            await update.message.reply_text("어떤 프로젝트인지 이름을 알려주세요.")
+            return
+
+        if project_action == ACTION_ADD:
+            add_project(project_name, status=STATUS_IN_PROGRESS)
+            await update.message.reply_text(f"'{project_name}' 프로젝트를 새로 등록했습니다.")
+            return
+
+        project = find_project_by_name(project_name)
+        if not project:
+            await update.message.reply_text(f"'{project_name}'과 일치하는 프로젝트를 찾지 못했습니다.")
+            return
+
+        if project_action == ACTION_STOP:
+            update_project(project["id"], status=STATUS_STOPPED)
+            await update.message.reply_text(f"'{project['name']}' 프로젝트를 중단 상태로 변경했습니다.")
+        elif project_action == ACTION_PAUSE:
+            update_project(project["id"], status=STATUS_STOPPED, sub_status="일시정지")
+            await update.message.reply_text(f"'{project['name']}' 프로젝트를 일시정지로 변경했습니다.")
+        elif project_action == ACTION_NEXT_STEPS:
+            content = extract_next_steps_content(user_text)
+            if not content:
+                await update.message.reply_text("다음 할 일 내용을 인식하지 못했습니다.")
+                return
+            update_project(project["id"], next_steps=content)
+            await update.message.reply_text(f"'{project['name']}'의 다음 할 일을 갱신했습니다: {content}")
         return
 
     intent = detect_message_intent(user_text)
