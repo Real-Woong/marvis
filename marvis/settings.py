@@ -31,6 +31,7 @@ SIRI_WEBHOOK_PORT = int(os.getenv("SIRI_WEBHOOK_PORT", "8081"))
 
 MEMORY_FILE = BASE_DIR / "marvis_memory.json"
 CONFIG_FILE = BASE_DIR / "marvis_config.json"
+PROJECTS_FILE = BASE_DIR / "marvis_projects.json"
 VOICE_DIR = BASE_DIR / "voices"
 KST = ZoneInfo("Asia/Seoul")
 

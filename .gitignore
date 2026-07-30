@@ -12,6 +12,7 @@ __pycache__/
 # Personal runtime data (chat id, memories, schedules)
 marvis_memory.json
 marvis_config.json
+marvis_projects.json
 
 # Generated runtime files
 voices/*.mp3

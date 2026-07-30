@@ -16,6 +16,7 @@ from .memory import (
     mark_done,
     prune_past_schedules,
 )
+from .projects import STATUSES, STATUS_STOPPED, SUB_STATUS_OPTIONS, format_all_projects, update_project
 from .schedule_parser import detect_message_intent
 from .storage import save_chat_id
 from .voice import send_text_and_voice
@@ -40,6 +41,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/memory - 최근 기억 확인\n"
         "/schedule - 저장된 일정/할 일 확인\n"
         "/ideas - 저장된 아이디어 확인\n"
+        "/projects - 프로젝트 진행 상태 확인\n"
+        "/project_update - 프로젝트 상태/할 일 갱신\n"
         "/done 1 - 1번 항목 완료 처리\n"
         "/forget_all_marvis - 전체 기억 삭제"
     )
@@ -60,6 +63,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "5. 최근 기억 확인\n/memory\n\n"
         "6. 완료 처리\n/done 1\n\n"
         "7. 전체 기억 삭제\n/forget_all_marvis\n\n"
+        "8. 프로젝트 진행 상태 확인\n/projects 또는 \"프로젝트 스케쥴\", \"프로젝트 할일\"이라고 물어보기\n\n"
+        "9. 프로젝트 상태/할 일 갱신\n/project_update 1 진행중 다음 할 일 내용\n\n"
         "주의: 일반 메시지도 기억에 저장되며 지난 날짜의 스케쥴은 자동 정리됩니다."
     )
     await update.message.reply_text(message)
@@ -83,6 +88,54 @@ async def ideas_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_chat_id(update.effective_chat.id)
     text = "최근 저장된 아이디어입니다:\n\n" + format_memories(get_ideas()[-20:])
     await send_text_and_voice(update, text)
+
+@owner_only
+async def projects_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """등록된 프로젝트를 진행중/중단으로 묶어 전송합니다."""
+    save_chat_id(update.effective_chat.id)
+    await send_text_and_voice(update, format_all_projects())
+
+@owner_only
+async def project_update_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """프로젝트 번호의 상태와 다음 할 일/메모를 갱신합니다."""
+    save_chat_id(update.effective_chat.id)
+    usage = (
+        "사용법: /project_update <번호> <진행중|중단> [내용]\n"
+        "예: /project_update 1 진행중 검증, Latency 개선\n"
+        "예: /project_update 2 중단 일시정지 팀원 합류 대기중\n\n"
+        f"중단 상태 태그(선택): {', '.join(SUB_STATUS_OPTIONS)}"
+    )
+    if len(context.args) < 2:
+        await update.message.reply_text(usage)
+        return
+
+    try:
+        project_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("번호는 숫자로 입력해주세요.\n\n" + usage)
+        return
+
+    status = context.args[1]
+    if status not in STATUSES:
+        await update.message.reply_text("상태는 '진행중' 또는 '중단'만 가능합니다.\n\n" + usage)
+        return
+
+    rest = context.args[2:]
+    sub_status = None
+    if status == STATUS_STOPPED and rest and rest[0] in SUB_STATUS_OPTIONS:
+        sub_status = rest[0]
+        rest = rest[1:]
+    content = " ".join(rest) if rest else None
+
+    if status == STATUS_STOPPED:
+        updated = update_project(project_id, status=status, sub_status=sub_status, note=content)
+    else:
+        updated = update_project(project_id, status=status, next_steps=content)
+
+    if updated:
+        await update.message.reply_text(f"{project_id}번 프로젝트를 갱신했습니다.")
+    else:
+        await update.message.reply_text(f"{project_id}번 프로젝트를 찾지 못했습니다.")
 
 @owner_only
 async def done_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -127,6 +180,13 @@ async def handle_text(
         await send_text_and_voice(
             update,
             format_schedule_by_date(),
+        )
+        return
+
+    if user_text == "!프로젝트":
+        await send_text_and_voice(
+            update,
+            format_all_projects(),
         )
         return
 

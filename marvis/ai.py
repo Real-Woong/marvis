@@ -3,6 +3,7 @@
 import google.generativeai as genai
 
 from .memory import format_memories, format_schedule_by_date, get_ideas, get_recent_memories, prune_past_schedules
+from .projects import format_active_projects, format_all_projects
 from .settings import GEMINI_API_KEY, MAX_RECENT_CONTEXT_ITEMS
 from .time_utils import today_kst_date
 
@@ -28,6 +29,7 @@ def ask_gemini(user_text: str) -> str:
     active_schedules = format_schedule_by_date()
     recent_memories = format_memories(get_recent_memories(limit=MAX_RECENT_CONTEXT_ITEMS))
     ideas = format_memories(get_ideas()[-20:])
+    projects = format_all_projects()
     prompt = f"""
 너는 사용자의 개인 AI 비서 'Marvis'야.
 
@@ -35,6 +37,9 @@ Marvis의 핵심 역할:
 - 사용자가 까먹기 쉬운 아이디어, 할 일, 일정, 생각을 기억하고 정리한다.
 - 사용자가 저장된 내용을 물으면 기억을 기반으로 답한다.
 - 사용자의 일정과 아이디어를 비서처럼 관리한다.
+- 사용자가 진행 중인 사이드 프로젝트를 파악하고 있다가, "프로젝트 스케쥴" 또는
+  "프로젝트 할일" 처럼 프로젝트 관련 질문을 받으면 아래 프로젝트 현황을 기반으로
+  진행중/중단 상태와, 진행중 프로젝트는 다음에 할 일까지 정리해서 답한다.
 - 답변은 한국어로 한다.
 - 너무 길지 않게 핵심부터 말한다.
 - 이동 중 에어팟으로 들어도 이해하기 쉽게 말한다.
@@ -53,6 +58,9 @@ Marvis의 핵심 역할:
 최근 아이디어:
 {ideas}
 
+프로젝트 현황(진행중/중단):
+{projects}
+
 사용자 메시지:
 {user_text}
 """
@@ -68,6 +76,7 @@ def generate_morning_briefing() -> str:
     # 대신 오늘 일정을 요약해서 먼저 브리핑하라고 역할을 명확히 지정합니다.
     prune_past_schedules()
     active_schedules = format_schedule_by_date()
+    active_projects = format_active_projects()
     prompt = f"""
 너는 사용자의 개인 비서 'Marvis'야.
 지금은 한국 시간 {today_kst_date().isoformat()} 아침이고, 사용자가 하루를 시작하기 전에
@@ -76,12 +85,17 @@ def generate_morning_briefing() -> str:
 브리핑 원칙:
 - 오늘 예정된 일정과 할 일을 우선순위 순으로 정리해서 알려준다.
 - 오늘 일정이 하나도 없으면 "오늘은 저장된 일정이 없다"고 짧게만 말한다.
+- 일정 브리핑 다음에, 현재 진행중인 사이드 프로젝트와 각 프로젝트의 다음 할 일을
+  짧게 이어서 알려준다. 진행중 프로젝트가 없으면 이 부분은 생략한다.
 - 잔소리하듯 늘어놓지 말고, 비서가 아침에 브리핑하듯 담백하게 핵심만 말한다.
 - 너무 길지 않게, 소리 내어 들어도 바로 이해되도록 말한다.
 - 답변은 한국어로 한다.
 
 오늘 날짜별 스케쥴:
 {active_schedules}
+
+진행중인 프로젝트:
+{active_projects}
 """
     response = get_model().generate_content(prompt)
     if not response.text:

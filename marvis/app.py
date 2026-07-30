@@ -11,6 +11,8 @@ from .handlers import (
     help_command,
     ideas_command,
     memory_command,
+    project_update_command,
+    projects_command,
     schedule_command,
     start,
 )
@@ -35,6 +37,8 @@ def main() -> None:
     app.add_handler(CommandHandler("memory", memory_command))
     app.add_handler(CommandHandler("schedule", schedule_command))
     app.add_handler(CommandHandler("ideas", ideas_command))
+    app.add_handler(CommandHandler("projects", projects_command))
+    app.add_handler(CommandHandler("project_update", project_update_command))
     app.add_handler(CommandHandler("done", done_command))
     app.add_handler(CommandHandler("forget_all_marvis", forget_all_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))

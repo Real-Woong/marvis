@@ -129,7 +129,15 @@ def detect_message_intent(text: str) -> str:
         "저장한 내용",
         "뭐였지",
         "기억해",
-        "했었나"
+        "했었나",
+        "프로젝트 스케쥴",
+        "프로젝트 스케줄",
+        "프로젝트 할일",
+        "프로젝트 할 일",
+        "프로젝트 진행",
+        "프로젝트 상황",
+        "프로젝트 상태",
+        "프로젝트 뭐",
     ]
 
     if any(pattern in normalized for pattern in memory_query_patterns):
