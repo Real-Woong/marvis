@@ -61,7 +61,7 @@ def send_morning_briefing_if_due(current: datetime) -> None:
     for project in get_active_projects():
         time.sleep(PROJECT_MESSAGE_INTERVAL_SECONDS)
         next_steps = project.get("next_steps") or "다음 할 일 미정"
-        send_proactive_telegram_message(f"📌 {project['name']}: {next_steps}")
+        send_proactive_telegram_message(f"{project['name']}: {next_steps}")
 
     save_last_briefing_date(today)
 
