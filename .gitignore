@@ -22,6 +22,8 @@ project_memory.json
 
 # Generated runtime files
 voices/*.mp3
+backups/
+evals/cache/
 
 # macOS
 .DS_Store

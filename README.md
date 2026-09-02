@@ -78,6 +78,28 @@ source /Users/jinwoong_kim/Desktop/project/Project_AI/_venvs/ai/bin/activate
 python -m unittest discover -s tests
 ```
 
+Starting Over
+
+`/forget_all_marvis` in Telegram archives: items drop out of every query and
+answer, but the rows stay and can be brought back. To actually delete them, use
+the CLI — it is deliberately not a bot command, because a mistyped Telegram
+message should not be able to destroy the database.
+
+```bash
+source /Users/jinwoong_kim/Desktop/project/Project_AI/_venvs/ai/bin/activate
+python -m marvis.reset --dry-run     # show what would go, delete nothing
+python -m marvis.reset               # memories and schedules only
+python -m marvis.reset --projects    # those, plus projects
+python -m marvis.reset --all         # everything, including the event log
+```
+
+It asks you to type `RESET` before proceeding, and always writes a JSON copy of
+the affected tables to `backups/` first. Display numbers (`seq`) restart from 1.
+
+The event log is excluded by default on purpose: it holds every utterance the
+bot has received and is the source material for the eval golden set. `--events`
+and `--all` delete it, and the command warns before doing so.
+
 Routing
 
 Marvis has two routers. `MARVIS_ROUTER` decides which one answers the user.
@@ -130,6 +152,7 @@ marvis-bot/
 │   ├── ai.py              # Legacy single-shot prompt (regex router only)
 │   ├── db.py              # SQLite connection, schema, event log
 │   ├── migrate.py         # One-time JSON to SQLite migration
+│   ├── reset.py           # Destructive reset CLI, with backup
 │   ├── memory.py          # Memory management and formatting
 │   ├── projects.py        # Side project status
 │   ├── schedule_parser.py # Date/time parsing and classification
@@ -143,7 +166,8 @@ marvis-bot/
 │   └── run_eval.py        # Scores tool choice and argument accuracy
 ├── tests/
 │   ├── test_phase0.py     # Regression tests for the storage rewrite
-│   └── test_phase1.py     # Tool validation and agent loop
+│   ├── test_phase1.py     # Tool validation and agent loop
+│   └── test_reset.py      # Reset scope and backup
 ├── requirements.txt
 ├── README.md
 ├── .env.example
@@ -429,6 +453,7 @@ marvis-bot/
 │   ├── ai.py              # 구 단발 프롬프트 (정규식 라우터 전용)
 │   ├── db.py              # SQLite 연결·스키마·이벤트 로그
 │   ├── migrate.py         # JSON → SQLite 1회성 마이그레이션
+│   ├── reset.py           # 실제 삭제 CLI (백업 후 진행)
 │   ├── memory.py          # 기억 관리 및 출력 형식
 │   ├── projects.py        # 사이드 프로젝트 진행 상태
 │   ├── schedule_parser.py # 일정 분류와 날짜·시간 파싱
@@ -442,7 +467,8 @@ marvis-bot/
 │   └── run_eval.py        # 도구 선택·인자 정확도 채점
 ├── tests/
 │   ├── test_phase0.py     # 저장소 재작성 회귀 테스트
-│   └── test_phase1.py     # 도구 검증과 에이전트 루프
+│   ├── test_phase1.py     # 도구 검증과 에이전트 루프
+│   └── test_reset.py      # 초기화 범위와 백업
 ├── requirements.txt
 ├── README.md
 ├── .env.example
