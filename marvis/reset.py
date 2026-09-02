@@ -17,7 +17,8 @@ import json
 import sys
 from pathlib import Path
 
-from .db import get_connection, init_db, log_event, transaction
+from .db import get_connection, log_event, transaction
+from .migrate import run_migration_if_needed
 from .settings import BASE_DIR
 from .time_utils import now_kst, now_string
 
@@ -95,7 +96,9 @@ def main() -> int:
     parser.add_argument("--yes", action="store_true", help="확인 절차 건너뛰기 (스크립트용)")
     options = parser.parse_args()
 
-    init_db()
+    # 아직 JSON에만 데이터가 있는 상태에서 빈 DB의 건수(전부 0)를 보여주면
+    # "지울 게 없다"고 오해하게 됩니다. 먼저 옮겨 놓고 실제 건수를 셉니다.
+    run_migration_if_needed()
 
     tables = ["items"]
     if options.all or options.projects:
