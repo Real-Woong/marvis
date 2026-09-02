@@ -19,8 +19,10 @@ fi
 
 TARGET="$1"
 KEY="${2:-}"
-SSH_OPTS=()
-[ -n "$KEY" ] && SSH_OPTS=(-i "$KEY")
+# macOS 기본 bash는 3.2라, set -u 상태에서 빈 배열을 "${ARR[@]}"로 펼치면
+# unbound variable로 죽습니다. 항상 최소 한 개는 들어 있게 둡니다.
+SSH_OPTS=(-o ConnectTimeout=15)
+[ -n "$KEY" ] && SSH_OPTS+=(-i "$KEY")
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REMOTE_DIR="~/marvis-bot"
