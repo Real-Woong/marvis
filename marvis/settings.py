@@ -39,6 +39,14 @@ LEGACY_CONFIG_FILE = BASE_DIR / "marvis_config.json"
 LEGACY_PROJECTS_FILE = BASE_DIR / "marvis_projects.json"
 
 VOICE_DIR = BASE_DIR / "voices"
+
+# SECRETARY(프로젝트 상태 수집기)는 같은 맥미니의 형제 디렉터리에 있습니다.
+#   ~/Desktop/project/SECRETARY
+#   ~/Desktop/project/Project_AI/LLM/Marvis   <- BASE_DIR
+# 다른 위치에 두거나 테스트에서 갈아끼울 때는 MARVIS_SECRETARY_DIR을 씁니다.
+SECRETARY_DIR = Path(
+    os.getenv("MARVIS_SECRETARY_DIR") or (BASE_DIR.parents[2] / "SECRETARY")
+)
 KST = ZoneInfo("Asia/Seoul")
 
 # 프롬프트에 실어 보낼 최근 기억 개수. (예전의 MAX_MEMORY_ITEMS /

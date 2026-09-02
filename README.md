@@ -756,3 +756,63 @@ google.generativeai 패키지가 deprecated 예정이라는 경고가 출력될 
 * 더 자연스러운 TTS 적용
 * google.generativeai에서 google.genai로 마이그레이션
 * 로컬 미니 PC 환경으로 이전 테스트
+
+---
+
+## SECRETARY 연동 — 프로젝트 상태 자동 반영
+
+Marvis의 `projects` 테이블은 더 이상 손으로 채우지 않습니다. 각 프로젝트
+저장소의 `_STATUS.md`가 유일한 원본이고, Marvis는 그 사본을 들고 있습니다.
+
+```
+~/Desktop/project/<프로젝트>/_STATUS.md      원본 (사람이 씀)
+        ↓  SECRETARY/render.py — 파서는 여기 하나뿐
+~/Desktop/project/SECRETARY/_index/all_status.json   기계용 색인
+        ↓  marvis/secretary.py
+Marvis projects 테이블 (사본)
+```
+
+두 도구는 같은 맥미니, 같은 디스크에 있습니다. 네트워크로 받아오는 게 아니라
+파일을 여는 것이라, 옮기는 타이머도 감시할 데몬도 없습니다.
+
+### 언제 당겨오나
+
+`marvis.secretary.sync()`가 호출되는 곳은 세 군데입니다.
+
+| 시점 | 이유 |
+|---|---|
+| 봇 시작 (`app.main`) | 켜지자마자 최신. 로그 한 줄로 연동 생존 확인 |
+| 아침 브리핑 직전 (`reminders`) | 브리핑이 어제 상태를 읽지 않도록 |
+| 프로젝트 조회 (`list_projects`, `ask_gemini`) | 물어본 순간이 최신 |
+
+28개 재생성이 0.1초라 미리 만들어 둘 이유가 없습니다. 다만 메시지마다
+`render.py`를 새로 띄우지 않도록 재생성에는 60초 하한을 둡니다
+(`_MIN_REFRESH_INTERVAL_SECONDS`).
+
+### 규칙
+
+* **조인 키는 이름이 아니라 경로**(`projects.status_path`)입니다. 이름은 사람이
+  언제든 바꾸고 괄호가 붙지만 경로는 안정적입니다.
+* **`muted_from_briefing`은 동기화가 건드리지 않습니다.** "브리핑에서 빼줘"는
+  SECRETARY가 모르는 Marvis 쪽 취향이라, 매번 되살리면 안 됩니다.
+* **`_STATUS.md`가 사라져도 지우지 않고 보관**(`archived = 1`)합니다. 파일이
+  돌아오면 보관이 풀립니다.
+* **손으로 만든 프로젝트**(`status_path IS NULL`)는 동기화 대상이 아닙니다.
+* SECRETARY의 4단계(진행중/관찰중/멈춤/종료)를 Marvis의 2단계로 좁히되, 원래
+  상태는 `sub_status`에 남깁니다. 아침 브리핑은 `진행중`만 읽어줍니다.
+* `blockers`가 있으면 `next`보다 그것을 보여줍니다. 소리로 듣는 한 줄이라
+  둘을 이어 붙이지 않습니다.
+
+### 실패해도 브리핑은 나갑니다
+
+SECRETARY가 없거나 `render.py`가 깨져도 `sync()`는 예외를 올리지 않고
+경고만 남깁니다. 재생성에 실패하면 마지막으로 성공한 색인을 씁니다.
+
+### 다른 위치에 두려면
+
+```bash
+MARVIS_SECRETARY_DIR=/path/to/SECRETARY
+```
+
+기본값은 `BASE_DIR.parents[2] / "SECRETARY"`입니다. 테스트는 이 값을 없는
+경로로 돌려 실제 SECRETARY를 건드리지 않습니다.

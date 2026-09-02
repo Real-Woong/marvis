@@ -11,6 +11,8 @@ from .ai import generate_morning_briefing
 from .db import log_event, transaction
 from .memory import get_due_reminders, mark_reminded
 from .projects import get_briefing_projects, to_speech_friendly_name
+from .secretary import format_sync_result
+from .secretary import sync as sync_secretary_projects
 from .settings import TELEGRAM_BOT_TOKEN
 from .storage import get_chat_id, get_last_briefing_date, save_last_briefing_date
 from .time_utils import now_kst, now_string
@@ -82,6 +84,14 @@ def send_morning_briefing_if_due(current: datetime) -> None:
                 payload={"date": today, "reason": "window_passed"},
             )
         return
+
+    # 프로젝트 상태를 읽기 직전에 SECRETARY 색인에서 당겨옵니다. 28개 기준
+    # 0.1초라 미리 만들어 둘 필요가 없고, 손으로 입력할 일도 없어집니다.
+    try:
+        logging.info("%s", format_sync_result(sync_secretary_projects()))
+    except Exception as error:
+        # 동기화가 실패해도 어제까지의 상태로 브리핑은 나가야 합니다.
+        logging.exception("SECRETARY 동기화 실패, 이전 상태로 브리핑합니다: %s", error)
 
     try:
         briefing = generate_morning_briefing()

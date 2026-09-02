@@ -17,6 +17,8 @@ from .handlers import (
     start,
 )
 from .migrate import run_migration_if_needed
+from .secretary import format_sync_result
+from .secretary import sync as sync_secretary_projects
 from .reminders import start_reminder_thread
 from .settings import TELEGRAM_BOT_TOKEN, validate_required_settings
 from .webhook import start_webhook_server
@@ -31,6 +33,14 @@ def main() -> None:
     )
     # 스키마를 만들고, 예전 JSON 데이터가 남아 있으면 1회만 옮깁니다.
     run_migration_if_needed()
+    # 켜지자마자 SECRETARY의 _STATUS.md 상태를 한 번 당겨옵니다. 브리핑을
+    # 기다리지 않고도 프로젝트 질문에 최신으로 답할 수 있고, 로그 한 줄로
+    # 연동이 살아 있는지 바로 보입니다.
+    try:
+        logging.info("%s", format_sync_result(sync_secretary_projects(force=True)))
+    except Exception as error:
+        logging.exception("SECRETARY 동기화 실패, 이전 상태로 시작합니다: %s", error)
+
     start_reminder_thread()
     start_webhook_server()
     # 명령어 핸들러를 먼저 등록하고 마지막에 일반 텍스트를 처리합니다.

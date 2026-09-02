@@ -19,6 +19,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # marvis.settings를 처음 import 하기 전에 테스트용 DB 경로를 잡아야 합니다.
 _TMP_DIR = tempfile.TemporaryDirectory()
 os.environ["MARVIS_DB_FILE"] = str(Path(_TMP_DIR.name) / "test.db")
+# 테스트가 실제 SECRETARY를 읽거나 render.py를 실행하면 안 됩니다.
+# 없는 경로를 가리키면 secretary.sync()가 조용히 건너뜁니다.
+os.environ["MARVIS_SECRETARY_DIR"] = str(Path(_TMP_DIR.name) / "no-secretary")
 os.environ.setdefault("GEMINI_API_KEY", "test-key")
 
 # ai.py가 import하는 레거시 SDK를 스텁으로 대체합니다.

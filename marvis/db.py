@@ -19,7 +19,7 @@ from contextlib import contextmanager
 from .settings import DB_FILE
 from .time_utils import now_string
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # 스레드마다 별도 연결을 씁니다. 텔레그램 핸들러, 알림 루프, 웹훅 서버가
 # 각각 다른 스레드에서 동시에 접근합니다.
@@ -64,7 +64,12 @@ CREATE TABLE IF NOT EXISTS projects (
     muted_from_briefing INTEGER NOT NULL DEFAULT 0,
     archived            INTEGER NOT NULL DEFAULT 0,
     created_at          TEXT NOT NULL,
-    updated_at          TEXT
+    updated_at          TEXT,
+    -- SECRETARY 의 _STATUS.md 경로. 이 프로젝트를 파일과 잇는 유일한 키다.
+    -- 이름은 사람이 언제든 바꾸므로 조인 키로 쓰지 않는다.
+    -- 손으로 추가한 프로젝트는 NULL 이고, SQLite 는 UNIQUE 에서 NULL 중복을 허용한다.
+    status_path         TEXT,
+    source              TEXT NOT NULL DEFAULT 'telegram'
 );
 
 CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(archived, status);
@@ -173,6 +178,29 @@ def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
     )
 
 
+# 이미 만들어진 DB를 최신 스키마로 올립니다. 키는 도달하려는 버전입니다.
+# 새로 만드는 DB는 _SCHEMA가 이미 최신이므로 여기를 거치지 않습니다.
+_MIGRATIONS: dict[int, list[str]] = {
+    2: [
+        "ALTER TABLE projects ADD COLUMN status_path TEXT",
+        "ALTER TABLE projects ADD COLUMN source TEXT NOT NULL DEFAULT 'telegram'",
+    ],
+}
+
+
+def _upgrade(current: int) -> None:
+    """current 버전 DB를 SCHEMA_VERSION까지 한 단계씩 올립니다."""
+    for target in range(current + 1, SCHEMA_VERSION + 1):
+        statements = _MIGRATIONS.get(target)
+        if statements is None:
+            raise RuntimeError(f"no migration path to schema v{target}")
+        with transaction() as tx:
+            for statement in statements:
+                tx.execute(statement)
+            set_meta(tx, "schema_version", str(target))
+        logging.info("Migrated database schema v%s -> v%s", target - 1, target)
+
+
 def init_db() -> None:
     """스키마를 만들고 버전을 기록합니다. 이미 있으면 아무것도 하지 않습니다."""
     conn = get_connection()
@@ -184,8 +212,17 @@ def init_db() -> None:
         with transaction() as tx:
             set_meta(tx, "schema_version", str(SCHEMA_VERSION))
         logging.info("Initialized Marvis database at %s (schema v%s)", DB_FILE, SCHEMA_VERSION)
-    elif int(current) != SCHEMA_VERSION:
-        # 아직 마이그레이션 경로가 하나뿐이라 경고만 남깁니다.
+    elif int(current) < SCHEMA_VERSION:
+        _upgrade(int(current))
+    elif int(current) > SCHEMA_VERSION:
+        # 새 코드로 만든 DB를 옛 코드가 여는 경우. 건드리면 더 망가집니다.
         logging.warning(
             "Database schema version is %s but code expects %s", current, SCHEMA_VERSION
         )
+
+    # 컬럼이 확실히 존재하는 시점에 만듭니다. 새 DB든 방금 올린 DB든 여기를 지납니다.
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_status_path"
+        " ON projects(status_path)"
+    )
+    conn.commit()

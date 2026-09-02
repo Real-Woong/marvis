@@ -14,6 +14,7 @@ from .memory import (
     get_recent_memories,
 )
 from .projects import format_all_projects
+from .secretary import sync as sync_secretary_projects
 from .settings import MAX_IDEA_CONTEXT_ITEMS, MAX_RECENT_CONTEXT_ITEMS
 from .time_utils import today_kst_date
 
@@ -25,6 +26,7 @@ def ask_gemini(user_text: str) -> str:
     active_schedules = format_schedule_by_date()
     recent_memories = format_memories(get_recent_memories(limit=MAX_RECENT_CONTEXT_ITEMS))
     ideas = format_memories(get_ideas()[-MAX_IDEA_CONTEXT_ITEMS:])
+    sync_secretary_projects()
     projects = format_all_projects()
     prompt = f"""
 너는 사용자의 개인 AI 비서 'Marvis'야.

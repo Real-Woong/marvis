@@ -15,6 +15,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 _TMP_DIR = tempfile.TemporaryDirectory()
 os.environ["MARVIS_DB_FILE"] = str(Path(_TMP_DIR.name) / "reset.db")
+# 테스트가 실제 SECRETARY를 읽거나 render.py를 실행하면 안 됩니다.
+# 없는 경로를 가리키면 secretary.sync()가 조용히 건너뜁니다.
+os.environ["MARVIS_SECRETARY_DIR"] = str(Path(_TMP_DIR.name) / "no-secretary")
 os.environ.setdefault("GEMINI_API_KEY", "test-key")
 os.environ["MARVIS_ROUTER"] = "regex"
 

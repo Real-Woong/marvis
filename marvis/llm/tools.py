@@ -30,6 +30,7 @@ from ..projects import (
     load_projects,
     update_project,
 )
+from ..secretary import sync as sync_secretary_projects
 from ..settings import KST
 from ..time_utils import now_kst, today_kst_date
 
@@ -324,6 +325,7 @@ def _complete_item(seq, **_):
     },
 )
 def _list_projects(status=None, **_):
+    sync_secretary_projects()
     items = load_projects()
     if status:
         items = [i for i in items if i["status"] == status]
