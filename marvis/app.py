@@ -16,6 +16,7 @@ from .handlers import (
     schedule_command,
     start,
 )
+from .migrate import run_migration_if_needed
 from .reminders import start_reminder_thread
 from .settings import TELEGRAM_BOT_TOKEN, validate_required_settings
 from .webhook import start_webhook_server
@@ -28,6 +29,8 @@ def main() -> None:
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         level=logging.INFO,
     )
+    # 스키마를 만들고, 예전 JSON 데이터가 남아 있으면 1회만 옮깁니다.
+    run_migration_if_needed()
     start_reminder_thread()
     start_webhook_server()
     # 명령어 핸들러를 먼저 등록하고 마지막에 일반 텍스트를 처리합니다.

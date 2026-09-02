@@ -49,21 +49,57 @@ User: ubuntu
 
 The server was configured using an Oracle Always Free eligible instance.
 
+Data Storage
+
+All state lives in a single SQLite file, `marvis.db`, created next to `bot.py`.
+Set `MARVIS_DB_FILE` to use a different path (tests, a second instance).
+
+* Every record has a permanent UUID plus a stable display number (`seq`) that is
+  never reassigned, so `/done 12` always refers to the same item.
+* Nothing is deleted. Past schedules and `/forget_all_marvis` set an `archived`
+  flag, so history is preserved.
+* An append-only `events` table records every incoming utterance and every state
+  change.
+
+On first start, `marvis/migrate.py` moves existing `marvis_*.json` files into the
+database and leaves a `.bak` copy of each. It is safe to run more than once, and
+can be run on its own:
+
+```bash
+# macOS has no bare `python`; activate the shared AI venv first.
+source /Users/jinwoong_kim/Desktop/project/Project_AI/_venvs/ai/bin/activate
+python -m marvis.migrate
+```
+
+Run the regression tests with:
+
+```bash
+source /Users/jinwoong_kim/Desktop/project/Project_AI/_venvs/ai/bin/activate
+python -m unittest discover -s tests
+```
+
 Project Structure
 
 marvis-bot/
 ├── bot.py                 # Application entry point
 ├── marvis/
 │   ├── app.py             # Telegram application setup
-│   ├── handlers.py        # Commands and message handlers
+│   ├── core.py            # Single processing path shared by every input
+│   ├── handlers.py        # Telegram adapter (sending only)
+│   ├── webhook.py         # Siri Shortcut adapter (sending only)
 │   ├── ai.py              # Gemini response generation
+│   ├── db.py              # SQLite connection, schema, event log
+│   ├── migrate.py         # One-time JSON to SQLite migration
 │   ├── memory.py          # Memory management and formatting
+│   ├── projects.py        # Side project status
 │   ├── schedule_parser.py # Date/time parsing and classification
 │   ├── reminders.py       # Proactive reminder loop
 │   ├── voice.py           # Korean TTS responses
-│   ├── storage.py         # JSON persistence
+│   ├── storage.py         # Settings stored in SQLite
 │   ├── settings.py        # Environment and path settings
 │   └── time_utils.py      # Korea-time helpers
+├── tests/
+│   └── test_phase0.py     # Regression tests for the storage rewrite
 ├── requirements.txt
 ├── README.md
 ├── .env.example
@@ -84,7 +120,7 @@ Installation
 Local development on this Mac uses the shared AI environment:
 
 ```bash
-source /Users/kim_jinwoong/Desktop/project/Project_AI/_venvs/ai/bin/activate
+source /Users/jinwoong_kim/Desktop/project/Project_AI/_venvs/ai/bin/activate
 python bot.py
 ```
 
@@ -337,15 +373,22 @@ marvis-bot/
 ├── bot.py                 # 실행 진입점
 ├── marvis/
 │   ├── app.py             # Telegram 애플리케이션 구성
-│   ├── handlers.py        # 명령어 및 메시지 핸들러
+│   ├── core.py            # 모든 입력이 지나가는 단일 처리 경로
+│   ├── handlers.py        # Telegram 어댑터 (전송만 담당)
+│   ├── webhook.py         # Siri 단축어 어댑터 (전송만 담당)
 │   ├── ai.py              # Gemini 답변 생성
+│   ├── db.py              # SQLite 연결·스키마·이벤트 로그
+│   ├── migrate.py         # JSON → SQLite 1회성 마이그레이션
 │   ├── memory.py          # 기억 관리 및 출력 형식
+│   ├── projects.py        # 사이드 프로젝트 진행 상태
 │   ├── schedule_parser.py # 일정 분류와 날짜·시간 파싱
 │   ├── reminders.py       # 능동 알림 루프
 │   ├── voice.py           # 한국어 음성 답변
-│   ├── storage.py         # JSON 데이터 저장
+│   ├── storage.py         # 설정 값 저장 (SQLite)
 │   ├── settings.py        # 환경 변수 및 경로 설정
 │   └── time_utils.py      # 한국 시간 유틸리티
+├── tests/
+│   └── test_phase0.py     # 저장소 재작성 회귀 테스트
 ├── requirements.txt
 ├── README.md
 ├── .env.example

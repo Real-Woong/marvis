@@ -5,22 +5,28 @@ import logging
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from .ai import ask_gemini
-from .memory import add_memory
+from .core import SOURCE_SIRI, handle_message
 from .reminders import send_proactive_telegram_message
-from .schedule_parser import detect_message_intent
 from .settings import SIRI_SHORTCUT_SECRET, SIRI_WEBHOOK_HOST, SIRI_WEBHOOK_PORT
 
 
 def _handle_captured_text(text: str) -> str:
-    """handlers.handle_text와 동일한 분류·저장·응답 흐름을 헤드리스로 수행합니다."""
-    if detect_message_intent(text) == "save":
-        add_memory(text)
+    """텔레그램과 완전히 같은 core 경로를 헤드리스로 실행합니다.
+
+    이제 Siri 경로에서도 `!스케쥴`과 프로젝트 명령이 동작합니다. 예전에는
+    이 함수가 흐름을 따로 구현하고 있어서 두 경로가 서로 어긋나 있었습니다.
+    "생각 중입니다..." 같은 진행 안내(ack)는 Siri가 읽을 필요가 없으므로
+    빼고 실제 답변만 돌려줍니다.
+    """
     try:
-        return ask_gemini(text)
+        replies = [reply for reply in handle_message(text, source=SOURCE_SIRI) if not reply.ack]
     except Exception:
         logging.exception("Error while handling Siri capture")
         return "답변을 생성하는 중 오류가 발생했습니다."
+
+    if not replies:
+        return "처리했습니다."
+    return "\n\n".join(reply.text for reply in replies)
 
 
 class _CaptureHandler(BaseHTTPRequestHandler):
