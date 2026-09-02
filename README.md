@@ -103,10 +103,40 @@ tail -f ~/Library/Logs/marvis/bot.log                   # logs
 sudo ./deploy/uninstall-macos.sh                        # stop and remove
 ```
 
-Two things that silently break an always-on Mac: sleep (handled by the
-installer) and FileVault — with FileVault on, a reboot leaves the disk locked
-until someone logs in, and the daemon will not start until then. Check with
-`fdesetup status`.
+Three things that silently break an always-on Mac:
+
+* **Sleep** — handled by the installer (`pmset`).
+* **FileVault** — a reboot leaves the disk locked until someone logs in, and the
+  daemon will not start until then. Check with `fdesetup status`.
+* **Privacy protection** — the project lives under `~/Desktop`, which macOS
+  guards. A LaunchDaemon has no GUI session to answer the permission prompt, so
+  it hangs inside `getcwd()` before running a single line, writing no logs and
+  opening no sockets. Grant Full Disk Access to the Python binary that actually
+  runs (`ps aux | grep bot.py` shows its path — the real Homebrew binary, not
+  the venv symlink) in System Settings → Privacy & Security → Full Disk Access.
+
+When restarting by hand, wait for the old process to go before bootstrapping the
+new one. A daemon stuck in a kernel call does not die immediately, and
+bootstrapping while it is still unloading fails with `Input/output error 5`:
+
+```bash
+sudo launchctl bootout system/com.marvis.bot; sleep 8
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.marvis.bot.plist
+```
+
+Siri Shortcut
+
+The Shortcut posts to the local webhook over Tailscale, so there is no tunnel to
+run and the address never changes:
+
+```
+http://100.96.86.10:8081/capture
+```
+
+Plain `http`, not `https` — the webhook speaks HTTP, and an `https://` URL fails
+the TLS handshake. Keep the `X-Marvis-Secret` header. Set `SIRI_WEBHOOK_HOST` in
+`.env` to the machine's Tailscale address; the server retries the bind until the
+interface is up, so boot order does not matter.
 
 Starting Over
 

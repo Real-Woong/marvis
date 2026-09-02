@@ -3,6 +3,7 @@
 import json
 import logging
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .core import SOURCE_SIRI, handle_message
@@ -79,11 +80,55 @@ class _CaptureHandler(BaseHTTPRequestHandler):
         self._respond(200, {"ok": True, "reply": answer})
 
 
+# 바인딩 재시도 간격(초)과 최대 횟수. Tailscale 인터페이스가 올라오기 전에
+# 봇이 먼저 뜨는 경우를 견디기 위한 값입니다.
+_BIND_RETRY_SECONDS = 5
+_BIND_MAX_ATTEMPTS = 60
+
+
+def _serve_forever_with_retry() -> None:
+    """주소가 준비될 때까지 기다렸다가 웹훅 서버를 띄웁니다.
+
+    Tailscale 주소에 바인딩하면 부팅 순서에 따라 아직 인터페이스가 없을 수
+    있습니다. 예전처럼 여기서 예외가 나면 봇 전체가 죽었습니다. 이제는
+    조용히 기다렸다가 붙습니다.
+    """
+    for attempt in range(1, _BIND_MAX_ATTEMPTS + 1):
+        try:
+            server = ThreadingHTTPServer(
+                (SIRI_WEBHOOK_HOST, SIRI_WEBHOOK_PORT), _CaptureHandler
+            )
+        except OSError as error:
+            if attempt == 1 or attempt % 12 == 0:
+                logging.warning(
+                    "Siri webhook could not bind to %s:%s yet (%s). Retrying.",
+                    SIRI_WEBHOOK_HOST,
+                    SIRI_WEBHOOK_PORT,
+                    error,
+                )
+            time.sleep(_BIND_RETRY_SECONDS)
+            continue
+
+        logging.info(
+            "Siri capture webhook listening on %s:%s", SIRI_WEBHOOK_HOST, SIRI_WEBHOOK_PORT
+        )
+        server.serve_forever()
+        return
+
+    logging.error(
+        "Gave up binding the Siri webhook to %s:%s after %s attempts.",
+        SIRI_WEBHOOK_HOST,
+        SIRI_WEBHOOK_PORT,
+        _BIND_MAX_ATTEMPTS,
+    )
+
+
 def start_webhook_server() -> None:
-    """SIRI_SHORTCUT_SECRET이 설정된 경우에만 로컬 전용 웹훅 서버를 시작합니다."""
+    """SIRI_SHORTCUT_SECRET이 설정된 경우에만 웹훅 서버를 시작합니다.
+
+    바인딩 실패가 봇을 죽이지 않도록 별도 스레드에서 재시도합니다.
+    """
     if not SIRI_SHORTCUT_SECRET:
         logging.info("SIRI_SHORTCUT_SECRET is not set; Siri capture webhook is disabled.")
         return
-    server = ThreadingHTTPServer((SIRI_WEBHOOK_HOST, SIRI_WEBHOOK_PORT), _CaptureHandler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    logging.info("Siri capture webhook listening on %s:%s", SIRI_WEBHOOK_HOST, SIRI_WEBHOOK_PORT)
+    threading.Thread(target=_serve_forever_with_retry, daemon=True).start()
