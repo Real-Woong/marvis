@@ -11,6 +11,10 @@ __pycache__/
 !.env.example
 
 # Personal runtime data (chat id, memories, schedules)
+marvis.db
+marvis.db-wal
+marvis.db-shm
+*.json.bak
 marvis_memory.json
 marvis_config.json
 marvis_projects.json

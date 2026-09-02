@@ -29,15 +29,23 @@ SIRI_SHORTCUT_SECRET = os.getenv("SIRI_SHORTCUT_SECRET")
 SIRI_WEBHOOK_HOST = os.getenv("SIRI_WEBHOOK_HOST", "127.0.0.1")
 SIRI_WEBHOOK_PORT = int(os.getenv("SIRI_WEBHOOK_PORT", "8081"))
 
-MEMORY_FILE = BASE_DIR / "marvis_memory.json"
-CONFIG_FILE = BASE_DIR / "marvis_config.json"
-PROJECTS_FILE = BASE_DIR / "marvis_projects.json"
+# Phase 0부터 모든 상태는 SQLite에 저장합니다. 아래 JSON 경로들은 최초 1회
+# 마이그레이션(marvis/migrate.py)에서 읽기 전용으로만 사용합니다.
+# MARVIS_DB_FILE로 다른 경로를 지정할 수 있습니다(테스트, 별도 인스턴스 운영).
+DB_FILE = Path(os.getenv("MARVIS_DB_FILE") or (BASE_DIR / "marvis.db"))
+
+LEGACY_MEMORY_FILE = BASE_DIR / "marvis_memory.json"
+LEGACY_CONFIG_FILE = BASE_DIR / "marvis_config.json"
+LEGACY_PROJECTS_FILE = BASE_DIR / "marvis_projects.json"
+
 VOICE_DIR = BASE_DIR / "voices"
 KST = ZoneInfo("Asia/Seoul")
 
-MAX_MEMORY_ITEMS = 500
-MAX_IDEA_ITEMS = 150
+# 프롬프트에 실어 보낼 최근 기억 개수. (예전의 MAX_MEMORY_ITEMS /
+# MAX_IDEA_ITEMS는 JSON 파일 크기를 줄이려고 오래된 항목을 삭제하는 용도라
+# SQLite로 옮기면서 없앴습니다. 이제 아무것도 지우지 않습니다.)
 MAX_RECENT_CONTEXT_ITEMS = 40
+MAX_IDEA_CONTEXT_ITEMS = 20
 
 
 def validate_required_settings() -> None:
