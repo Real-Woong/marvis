@@ -47,6 +47,19 @@ KST = ZoneInfo("Asia/Seoul")
 MAX_RECENT_CONTEXT_ITEMS = 40
 MAX_IDEA_CONTEXT_ITEMS = 20
 
+# 라우터 모드.
+#   regex  - 정규식만 (Phase 0까지의 동작)
+#   shadow - 정규식이 사용자에게 응답하고, LLM은 나란히 돌며 로그에만 남긴다
+#   llm    - LLM 라우터가 응답한다 (전환 완료)
+# 기본값이 shadow인 이유: 배포해도 사용자 경험이 바뀌지 않고, 되돌리려면
+# 환경 변수 하나만 바꾸면 되기 때문입니다.
+ROUTER_MODE = os.getenv("MARVIS_ROUTER", "shadow").strip().lower()
+
+LLM_PROVIDER = os.getenv("MARVIS_LLM_PROVIDER", "gemini").strip().lower()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5").strip()
+
 
 def validate_required_settings() -> None:
     """봇 실행에 반드시 필요한 인증 정보가 있는지 확인합니다."""

@@ -85,6 +85,27 @@ def find_project_by_name(name: str) -> dict | None:
     return matches[0] if len(matches) == 1 else None
 
 
+def find_projects_by_name(name: str) -> list[dict]:
+    """이름으로 후보를 전부 반환합니다.
+
+    find_project_by_name은 후보가 여럿이면 None을 주고 정보를 버렸습니다.
+    LLM 라우터는 후보 목록을 받아 clarify로 되물을 수 있어야 합니다.
+    """
+    normalized = name.strip().lower()
+    projects = load_projects()
+
+    exact = [item for item in projects if item["name"].strip().lower() == normalized]
+    if exact:
+        return exact
+
+    return [
+        item
+        for item in projects
+        if normalized in item["name"].strip().lower()
+        or item["name"].strip().lower() in normalized
+    ]
+
+
 def extract_project_name(text: str) -> str | None:
     """'프로젝트'와 붙어 있는 단어를 프로젝트 이름 후보로 추출합니다."""
     idx = text.find("프로젝트")

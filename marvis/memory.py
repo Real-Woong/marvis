@@ -60,7 +60,7 @@ def archive_past_schedules() -> int:
 
 
 def add_memory(text: str, source: str = "telegram") -> dict:
-    """메시지를 분류하고 날짜·알림 정보를 붙여 새 기억으로 저장합니다."""
+    """정규식으로 분류·날짜 추출한 뒤 저장합니다(구 라우터 경로)."""
     memory_type = classify_memory(text)
     schedule_date = extract_schedule_date(text)
     reminder_at = extract_reminder_datetime(text, schedule_date)
@@ -72,9 +72,31 @@ def add_memory(text: str, source: str = "telegram") -> dict:
         except ValueError:
             schedule_date = None
 
+    return create_item(
+        content=text,
+        kind=memory_type,
+        schedule_date=schedule_date,
+        reminder_at=reminder_at,
+        source=source,
+    )
+
+
+def create_item(
+    content: str,
+    kind: str,
+    schedule_date: str | None = None,
+    reminder_at: str | None = None,
+    source: str = "telegram",
+) -> dict:
+    """분류와 날짜가 이미 정해진 항목을 저장합니다.
+
+    LLM 라우터는 도구 인자로 값을 직접 받으므로 이 함수를 씁니다. 정규식
+    라우터도 add_memory를 통해 결국 여기로 들어와서, 쓰기 경로는 하나입니다.
+    """
+    memory_type = kind
     item_id = new_id()
     created_at = now_string()
-    content = text.strip()
+    content = content.strip()
 
     with transaction() as tx:
         seq = next_seq(tx, "items")
@@ -245,3 +267,59 @@ def format_schedule_by_date() -> str:
         lines.append("날짜 미정")
         lines.extend(f"{item['seq']}. {item['content']}" for item in undated)
     return "\n".join(lines).strip()
+
+
+def get_schedules_between(date_from: str | None = None, date_to: str | None = None) -> list[dict]:
+    """기간 내 미완료 일정을 반환합니다. 날짜 미정 항목은 범위를 지정하면 제외됩니다."""
+    archive_past_schedules()
+    clauses = ["archived = 0", "type = 'schedule'", "done = 0"]
+    params: list = []
+    if date_from:
+        clauses.append("schedule_date >= ?")
+        params.append(date_from)
+    if date_to:
+        clauses.append("schedule_date <= ?")
+        params.append(date_to)
+    rows = get_connection().execute(
+        f"SELECT {_COLUMNS} FROM items WHERE {' AND '.join(clauses)}"
+        " ORDER BY schedule_date IS NULL, schedule_date, seq",
+        params,
+    ).fetchall()
+    return _rows_to_dicts(rows)
+
+
+def search_memories(
+    kind: str | None = None, query: str | None = None, limit: int = 20
+) -> list[dict]:
+    """종류와 키워드로 기억을 찾습니다."""
+    clauses = ["archived = 0"]
+    params: list = []
+    if kind:
+        clauses.append("type = ?")
+        params.append(kind)
+    if query:
+        clauses.append("content LIKE ?")
+        params.append(f"%{query}%")
+    params.append(max(1, min(int(limit), 50)))
+    rows = get_connection().execute(
+        f"SELECT {_COLUMNS} FROM items WHERE {' AND '.join(clauses)}"
+        " ORDER BY seq DESC LIMIT ?",
+        params,
+    ).fetchall()
+    return _rows_to_dicts(reversed(rows))
+
+
+def counts_summary() -> dict:
+    """시스템 프롬프트에 넣을 건수 요약. 내용은 담지 않습니다."""
+    row = get_connection().execute(
+        "SELECT"
+        "  SUM(type = 'schedule' AND done = 0) AS open_schedules,"
+        "  SUM(type = 'idea') AS ideas,"
+        "  COUNT(*) AS total"
+        " FROM items WHERE archived = 0"
+    ).fetchone()
+    return {
+        "open_schedules": row["open_schedules"] or 0,
+        "ideas": row["ideas"] or 0,
+        "total": row["total"] or 0,
+    }
