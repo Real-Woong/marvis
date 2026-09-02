@@ -35,7 +35,7 @@ Area	Technology
 Server	Oracle Cloud VM
 OS	Ubuntu 22.04
 Bot Framework	python-telegram-bot
-AI Model	Google Gemini API
+AI Model	Google Gemini API (google-genai, function calling)
 TTS	gTTS
 Process Manager	systemd
 Language	Python
@@ -78,6 +78,40 @@ source /Users/jinwoong_kim/Desktop/project/Project_AI/_venvs/ai/bin/activate
 python -m unittest discover -s tests
 ```
 
+Routing
+
+Marvis has two routers. `MARVIS_ROUTER` decides which one answers the user.
+
+| Mode | Behaviour |
+|---|---|
+| `regex` | Keyword and regex routing only. |
+| `shadow` | Regex answers the user; the LLM runs alongside and only writes to the event log. Disagreements are recorded as `router.disagreed`. |
+| `llm` | The LLM router answers, using function calling. |
+
+`shadow` is the default: deploying changes nothing the user sees, and the
+disagreements it records become the eval golden set. Switch with one env var.
+
+Provider is selected with `MARVIS_LLM_PROVIDER` (`gemini` by default) and the
+model with `GEMINI_MODEL`. Tool definitions live in one place,
+`marvis/llm/tools.py`, so adapters only translate schemas.
+
+Evaluation
+
+The router is scored on which tool it calls with which arguments — reply
+wording is not graded.
+
+```bash
+source /Users/jinwoong_kim/Desktop/project/Project_AI/_venvs/ai/bin/activate
+python -m evals.run_eval                 # all cases
+python -m evals.run_eval --tag 상대날짜   # one category
+python -m evals.run_eval --no-cache      # ignore the response cache
+```
+
+Cases live in `evals/golden.jsonl`, one JSON object per line. A case may pin
+`today`, so absolute dates in the expected arguments stay correct over time.
+Each case runs against a throwaway database, and responses are cached by prompt
+hash so re-runs cost nothing unless the prompt changed.
+
 Project Structure
 
 marvis-bot/
@@ -87,7 +121,13 @@ marvis-bot/
 │   ├── core.py            # Single processing path shared by every input
 │   ├── handlers.py        # Telegram adapter (sending only)
 │   ├── webhook.py         # Siri Shortcut adapter (sending only)
-│   ├── ai.py              # Gemini response generation
+│   ├── agent.py           # Tool-calling loop with validation and retry
+│   ├── llm/
+│   │   ├── base.py        # Provider-neutral message and tool-call types
+│   │   ├── tools.py       # Tool schemas and implementations, in one place
+│   │   ├── gemini.py      # google-genai adapter
+│   │   └── factory.py     # Provider selection
+│   ├── ai.py              # Legacy single-shot prompt (regex router only)
 │   ├── db.py              # SQLite connection, schema, event log
 │   ├── migrate.py         # One-time JSON to SQLite migration
 │   ├── memory.py          # Memory management and formatting
@@ -98,8 +138,12 @@ marvis-bot/
 │   ├── storage.py         # Settings stored in SQLite
 │   ├── settings.py        # Environment and path settings
 │   └── time_utils.py      # Korea-time helpers
+├── evals/
+│   ├── golden.jsonl       # Router golden set
+│   └── run_eval.py        # Scores tool choice and argument accuracy
 ├── tests/
-│   └── test_phase0.py     # Regression tests for the storage rewrite
+│   ├── test_phase0.py     # Regression tests for the storage rewrite
+│   └── test_phase1.py     # Tool validation and agent loop
 ├── requirements.txt
 ├── README.md
 ├── .env.example
@@ -353,7 +397,7 @@ Telegram 메시지 입력
 Server	Oracle Cloud VM
 OS	Ubuntu 22.04
 Bot Framework	python-telegram-bot
-AI Model	Google Gemini API
+AI Model	Google Gemini API (google-genai, function calling)
 TTS	gTTS
 Process Manager	systemd
 Language	Python
@@ -376,7 +420,13 @@ marvis-bot/
 │   ├── core.py            # 모든 입력이 지나가는 단일 처리 경로
 │   ├── handlers.py        # Telegram 어댑터 (전송만 담당)
 │   ├── webhook.py         # Siri 단축어 어댑터 (전송만 담당)
-│   ├── ai.py              # Gemini 답변 생성
+│   ├── agent.py           # 검증·재시도가 있는 도구 호출 루프
+│   ├── llm/
+│   │   ├── base.py        # 프로바이더 중립 메시지·도구호출 타입
+│   │   ├── tools.py       # 도구 스키마와 구현을 한 자리에
+│   │   ├── gemini.py      # google-genai 어댑터
+│   │   └── factory.py     # 프로바이더 선택
+│   ├── ai.py              # 구 단발 프롬프트 (정규식 라우터 전용)
 │   ├── db.py              # SQLite 연결·스키마·이벤트 로그
 │   ├── migrate.py         # JSON → SQLite 1회성 마이그레이션
 │   ├── memory.py          # 기억 관리 및 출력 형식
@@ -387,8 +437,12 @@ marvis-bot/
 │   ├── storage.py         # 설정 값 저장 (SQLite)
 │   ├── settings.py        # 환경 변수 및 경로 설정
 │   └── time_utils.py      # 한국 시간 유틸리티
+├── evals/
+│   ├── golden.jsonl       # 라우터 골든셋
+│   └── run_eval.py        # 도구 선택·인자 정확도 채점
 ├── tests/
-│   └── test_phase0.py     # 저장소 재작성 회귀 테스트
+│   ├── test_phase0.py     # 저장소 재작성 회귀 테스트
+│   └── test_phase1.py     # 도구 검증과 에이전트 루프
 ├── requirements.txt
 ├── README.md
 ├── .env.example

@@ -1,0 +1,47 @@
+// Marvis 라우터 골든셋. 한 줄이 한 케이스.
+// today를 지정하면 그 시각으로 시계가 고정되므로 정답에 절대 날짜를 써도 썩지 않는다.
+// 기준일 2026-09-02는 수요일. expect.args는 부분 일치 — 적은 키만 본다.
+// 이 파일은 씨앗이다. shadow 기간의 router.disagreed 기록에서 실제로 헷갈린
+// 케이스를 뽑아 계속 채운다. 카테고리당 5건 미만이면 그 점수는 믿지 않는다.
+
+{"id":"save-001","utterance":"내일 오후 3시에 병원 예약 확인해야 해","today":"2026-09-02","expect":{"tool":"save_memory","args":{"kind":"schedule","schedule_date":"2026-09-03","reminder_at":"2026-09-03 15:00:00"}},"tags":["저장","상대날짜","알림"]}
+{"id":"save-002","utterance":"모레까지 보고서 제출해야 해","today":"2026-09-02","expect":{"tool":"save_memory","args":{"kind":"schedule","schedule_date":"2026-09-04"}},"tags":["저장","상대날짜"]}
+{"id":"save-003","utterance":"다음주 화요일 오전에 치과 가야 해","today":"2026-09-02","expect":{"tool":"save_memory","args":{"kind":"schedule","schedule_date":"2026-09-08"}},"note":"정규식이 날짜를 못 잡던 대표 케이스","tags":["저장","상대날짜"]}
+{"id":"save-004","utterance":"이번주 금요일에 팀 회식 있어","today":"2026-09-02","expect":{"tool":"save_memory","args":{"kind":"schedule","schedule_date":"2026-09-04"}},"tags":["저장","상대날짜"]}
+{"id":"save-005","utterance":"방금 새 아이디어가 생각났어. 산책 코스 추천해주는 앱","today":"2026-09-02","expect":{"tool":"save_memory","args":{"kind":"idea"}},"tags":["저장"]}
+{"id":"save-006","utterance":"오늘 저녁 8시에 운동하라고 알려줘","today":"2026-09-02","expect":{"tool":"save_memory","args":{"kind":"schedule","schedule_date":"2026-09-02","reminder_at":"2026-09-02 20:00:00"}},"tags":["저장","알림"]}
+{"id":"save-007","utterance":"9월 20일 10시 반에 미용실","today":"2026-09-02","expect":{"tool":"save_memory","args":{"kind":"schedule","schedule_date":"2026-09-20","reminder_at":"2026-09-20 10:30:00"}},"tags":["저장","알림"]}
+{"id":"save-008","utterance":"주차 등록증 갱신하는 거 잊지 말아야지","today":"2026-09-02","expect":{"tool":"save_memory","args":{"kind":"schedule"}},"note":"날짜 없는 할 일. schedule_date 없이 저장돼야 한다","tags":["저장"]}
+{"id":"save-009","utterance":"엄마 생신 선물 뭐 살지 생각해두기","today":"2026-09-02","expect":{"tool":"save_memory"},"tags":["저장"]}
+
+{"id":"rem-001","utterance":"30분 뒤에 물 마시라고 알려줘","today":"2026-09-02","now":"2026-09-02 14:20:00","expect":{"tool":"save_memory","args":{"reminder_at":"2026-09-02 14:50:00"}},"tags":["알림","상대날짜"]}
+{"id":"rem-002","utterance":"2시간 후에 빨래 널어야 해","today":"2026-09-02","now":"2026-09-02 09:00:00","expect":{"tool":"save_memory","args":{"reminder_at":"2026-09-02 11:00:00"}},"tags":["알림","상대날짜"]}
+{"id":"rem-003","utterance":"10분 뒤 알람","today":"2026-09-02","now":"2026-09-02 23:55:00","expect":{"tool":"save_memory","args":{"reminder_at":"2026-09-03 00:05:00"}},"note":"자정을 넘어가는 경계","tags":["알림","상대날짜"]}
+
+{"id":"query-001","utterance":"내가 오늘 뭐 해야 해?","today":"2026-09-02","given_items":[{"content":"세무서 서류 제출","schedule_date":"2026-09-02"}],"expect":{"tool":"list_schedule"},"tags":["조회"]}
+{"id":"query-002","utterance":"이번주 일정 알려줘","today":"2026-09-02","expect":{"tool":"list_schedule"},"tags":["조회"]}
+{"id":"query-003","utterance":"내가 저장해둔 아이디어 뭐 있었지","today":"2026-09-02","expect":{"tool":"list_memories","args":{"kind":"idea"}},"tags":["조회"]}
+{"id":"query-004","utterance":"병원 관련해서 저장한 거 있어?","today":"2026-09-02","expect":{"tool":"list_memories"},"tags":["조회"]}
+{"id":"query-005","utterance":"프로젝트 다음 할일 뭐였지","today":"2026-09-02","given_projects":["Agora","Marvis"],"expect":{"tool":"list_projects"},"tags":["조회","프로젝트"]}
+
+{"id":"proj-001","utterance":"Textro프로젝트 시작할거야 새로 추가해줘","today":"2026-09-02","given_projects":["Agora"],"expect":{"tool":"add_project","args":{"name":"Textro"}},"tags":["프로젝트"]}
+{"id":"proj-002","utterance":"Agora프로젝트 다음할일은 Latency 개선이야","today":"2026-09-02","given_projects":["Agora","Marvis"],"expect":{"tool":"update_project","args":{"name":"Agora","next_steps":"Latency 개선"}},"tags":["프로젝트"]}
+{"id":"proj-003","utterance":"Marvis 프로젝트 잠깐 멈출게","today":"2026-09-02","given_projects":["Agora","Marvis"],"expect":{"tool":"update_project","args":{"name":"Marvis","status":"중단"}},"tags":["프로젝트"]}
+{"id":"proj-004","utterance":"Agora 아침 브리핑에서 빼줘","today":"2026-09-02","given_projects":["Agora","Marvis"],"expect":{"tool":"update_project","args":{"name":"Agora","muted_from_briefing":"True"}},"tags":["프로젝트"]}
+{"id":"proj-005","utterance":"BubbleBreak 다시 진행중으로 바꿔줘","today":"2026-09-02","given_projects":["BubbleBreak"],"expect":{"tool":"update_project","args":{"name":"BubbleBreak","status":"진행중"}},"tags":["프로젝트"]}
+
+{"id":"amb-001","utterance":"프로젝트 중단으로 바꿔줘","today":"2026-09-02","given_projects":["Agora","Marvis"],"expect":{"tool":"clarify"},"note":"어느 프로젝트인지 없음 — 추측하면 오답","tags":["모호성"]}
+{"id":"amb-002","utterance":"A 프로젝트 다음할일 정리해줘","today":"2026-09-02","given_projects":["Agora","AI-Spoc"],"expect":{"tool":"clarify"},"note":"A가 둘에 걸린다","tags":["모호성","프로젝트"]}
+{"id":"amb-003","utterance":"그거 완료 처리해줘","today":"2026-09-02","given_items":[{"content":"세무서 서류 제출","schedule_date":"2026-09-02"},{"content":"택배 부치기","schedule_date":"2026-09-02"}],"expect":{"tool":"clarify"},"note":"'그거'가 무엇인지 특정 불가","tags":["모호성"]}
+{"id":"amb-004","utterance":"다음에 하기로 한 거 알려줘","today":"2026-09-02","expect":{"tool":"list_schedule"},"note":"모호하지만 조회로 해결 가능 — clarify까지 갈 필요 없음","tags":["모호성","조회"]}
+{"id":"amb-005","utterance":"프로젝트 하나 추가해줘","today":"2026-09-02","expect":{"tool":"clarify"},"note":"이름이 없다","tags":["모호성","프로젝트"]}
+
+{"id":"done-001","utterance":"3번 항목 완료했어","today":"2026-09-02","given_items":[{"content":"a","schedule_date":"2026-09-02"},{"content":"b","schedule_date":"2026-09-02"},{"content":"세무서 서류 제출","schedule_date":"2026-09-02"}],"expect":{"tool":"complete_item","args":{"seq":"3"}},"tags":["완료"]}
+{"id":"done-002","utterance":"세무서 서류 제출한 거 체크해줘","today":"2026-09-02","given_items":[{"content":"세무서 서류 제출","schedule_date":"2026-09-02"}],"expect":{"tool":"list_schedule"},"note":"번호를 모르니 먼저 조회해야 한다. 첫 도구가 조회면 정답","tags":["완료","조회"]}
+
+{"id":"chat-001","utterance":"안녕","today":"2026-09-02","expect":{"tool":null},"tags":["대화","오탐"]}
+{"id":"chat-002","utterance":"고마워","today":"2026-09-02","expect":{"tool":null},"tags":["대화","오탐"]}
+{"id":"chat-003","utterance":"오늘 날씨 어때?","today":"2026-09-02","expect":{"tool":null},"note":"날씨는 저장도 조회도 아니다","tags":["대화","오탐"]}
+{"id":"chat-004","utterance":"너 이름이 뭐야?","today":"2026-09-02","expect":{"tool":null},"tags":["대화","오탐"]}
+{"id":"chat-005","utterance":"요즘 개발이 잘 안 되네","today":"2026-09-02","expect":{"tool":null},"note":"넋두리. 정규식은 '개발' 때문에 idea로 저장해버린다","tags":["대화","오탐"]}
+{"id":"chat-006","utterance":"운동 어떻게 시작하는 게 좋을까?","today":"2026-09-02","expect":{"tool":null},"note":"정규식은 '운동' 키워드로 schedule 저장. 실제로는 질문","tags":["대화","오탐"]}
