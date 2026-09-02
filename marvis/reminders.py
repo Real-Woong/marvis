@@ -5,18 +5,22 @@ import threading
 import time
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .ai import generate_morning_briefing
-from .memory import load_memory, save_memory
+from .db import log_event, transaction
+from .memory import get_due_reminders, mark_reminded
 from .projects import get_briefing_projects, to_speech_friendly_name
-from .settings import KST, TELEGRAM_BOT_TOKEN
-from .storage import get_chat_id, get_last_briefing_date, memory_lock, save_last_briefing_date
+from .settings import TELEGRAM_BOT_TOKEN
+from .storage import get_chat_id, get_last_briefing_date, save_last_briefing_date
 from .time_utils import now_kst, now_string
 
 # Siri "알림 읽어주기"가 메시지 하나를 다 읽어주도록, 프로젝트 현황은 스케쥴과
 # 합치지 않고 프로젝트당 별도 메시지로 몇 초 간격을 두고 보낸다.
 PROJECT_MESSAGE_INTERVAL_SECONDS = 5
+
+# 브리핑 예정 시각을 이만큼 넘겨서 켜졌다면 "좋은 아침"을 보내지 않습니다.
+BRIEFING_WINDOW = timedelta(hours=2)
 
 
 def send_proactive_telegram_message(text: str) -> bool:
@@ -41,21 +45,44 @@ def send_proactive_telegram_message(text: str) -> bool:
         return False
 
 
+def briefing_time_for(current: datetime) -> tuple[int, int] | None:
+    """요일별 브리핑 예정 시각. 브리핑을 보내지 않는 날이면 None."""
+    weekday = current.weekday()  # 월=0 ... 일=6
+    if weekday == 6:
+        return None  # 일요일은 브리핑 없음
+    if weekday == 5:
+        return (10, 0)  # 토요일
+    return (8, 30)  # 월~금
+
+
 def send_morning_briefing_if_due(current: datetime) -> None:
-    """설정된 시각이 지났고 오늘 아직 안 보냈다면 아침 브리핑을 생성해 보냅니다."""
+    """예정 시각이 지났고 오늘 아직 안 보냈다면 아침 브리핑을 생성해 보냅니다."""
     today = current.date().isoformat()
     if get_last_briefing_date() == today:
         return
-    weekday = current.weekday()  # 월=0 ... 일=6
-    if weekday == 6:
-        return  # 일요일은 브리핑 없음
-    if weekday == 5:
-        hour, minute = 10, 0  # 토요일
-    else:
-        hour, minute = 8, 30  # 월~금
 
-    if (current.hour, current.minute) < (hour, minute):
+    scheduled = briefing_time_for(current)
+    if scheduled is None:
         return
+
+    scheduled_at = current.replace(
+        hour=scheduled[0], minute=scheduled[1], second=0, microsecond=0
+    )
+    if current < scheduled_at:
+        return
+
+    # 봇이 아침에 꺼져 있다가 한참 뒤에 켜진 경우입니다. 오후에 "좋은 아침입니다"를
+    # 보내는 대신 오늘 브리핑은 건너뛴 것으로 기록합니다.
+    if current > scheduled_at + BRIEFING_WINDOW:
+        logging.info("Briefing window for %s has passed; skipping.", today)
+        save_last_briefing_date(today)
+        with transaction() as tx:
+            log_event(
+                tx, "briefing.skipped", entity="system", source="reminder_loop",
+                payload={"date": today, "reason": "window_passed"},
+            )
+        return
+
     try:
         briefing = generate_morning_briefing()
     except Exception as error:
@@ -66,13 +93,19 @@ def send_morning_briefing_if_due(current: datetime) -> None:
     if not send_proactive_telegram_message(message):
         return
 
-    for project in get_briefing_projects():
+    projects = get_briefing_projects()
+    for project in projects:
         time.sleep(PROJECT_MESSAGE_INTERVAL_SECONDS)
         next_steps = project.get("next_steps") or "다음 할 일 미정"
         speech_name = to_speech_friendly_name(project["name"])
         send_proactive_telegram_message(f"{speech_name}: {next_steps}")
 
     save_last_briefing_date(today)
+    with transaction() as tx:
+        log_event(
+            tx, "briefing.sent", entity="system", source="reminder_loop",
+            payload={"date": today, "projects": len(projects)},
+        )
 
 
 def reminder_loop() -> None:
@@ -83,45 +116,18 @@ def reminder_loop() -> None:
             current = now_kst()
             send_morning_briefing_if_due(current)
 
-            # 파일을 읽는 동안만 잠그고, 네트워크 전송(최대 10초)은 락 밖에서
-            # 수행해 텔레그램 핸들러가 그동안 기억 파일에 접근하지 못하는
-            # 상황을 피합니다.
-            with memory_lock:
-                memories = load_memory()
-            due_items = []
-            # 완료됐거나 이미 알린 일정은 중복 발송하지 않습니다.
-            for item in memories:
-                if item.get("type") != "schedule" or item.get("done") or item.get("reminded"):
-                    continue
-                reminder_at = item.get("reminder_at")
-                if not reminder_at:
-                    continue
-                try:
-                    reminder_dt = datetime.strptime(reminder_at, "%Y-%m-%d %H:%M:%S").replace(tzinfo=KST)
-                except ValueError:
-                    continue
-                if reminder_dt <= current:
-                    due_items.append(item)
-
-            for item in due_items:
+            for item in get_due_reminders(now_string()):
                 message = (
                     "🔔 Marvis Reminder\n\n"
                     "지금 예정된 일정입니다.\n"
-                    f"- {item.get('content')}\n\n"
-                    f"알림 시각: {item.get('reminder_at')}"
+                    f"- {item['content']}\n\n"
+                    f"알림 시각: {item['reminder_at']}"
                 )
                 if not send_proactive_telegram_message(message):
                     continue
-                # 전송에 성공한 항목만, 그 사이 다른 스레드가 저장했을 수도 있는
-                # 최신 상태를 다시 읽어서 반영합니다.
-                with memory_lock:
-                    fresh_memories = load_memory()
-                    for fresh_item in fresh_memories:
-                        if fresh_item.get("id") == item.get("id"):
-                            fresh_item["reminded"] = True
-                            fresh_item["reminded_at"] = now_string()
-                            break
-                    save_memory(fresh_memories)
+                # UUID로 표시하므로, 그사이 다른 항목이 보관 처리돼도 엉뚱한
+                # 항목에 표시가 찍히지 않습니다.
+                mark_reminded(item["id"])
         except Exception as error:
             logging.exception("Reminder loop error: %s", error)
         time.sleep(30)

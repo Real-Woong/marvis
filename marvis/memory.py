@@ -1,85 +1,65 @@
-"""기억의 생성, 정리, 조회, 완료 처리와 출력 형식을 담당합니다."""
+"""기억의 생성, 보관, 조회, 완료 처리와 출력 형식을 담당합니다.
+
+Phase 0에서 바뀐 것 두 가지:
+
+* 항목마다 영구 UUID(`id`)와, 사용자에게 노출하는 안정적 번호(`seq`)를 가집니다.
+  `seq`는 한 번 부여되면 절대 바뀌지 않으므로 `/done 12`는 언제 실행해도 같은
+  항목을 가리킵니다.
+* 지난 일정을 삭제하지 않고 보관(archive)합니다. 조회에서만 빠지고 데이터는
+  남습니다.
+"""
 
 from datetime import datetime
 
+from .db import get_connection, log_event, new_id, next_seq, transaction
 from .schedule_parser import classify_memory, extract_reminder_datetime, extract_schedule_date
-from .settings import MAX_IDEA_ITEMS, MAX_MEMORY_ITEMS, MEMORY_FILE
-from .storage import load_json_file, load_raw_memory, memory_lock, save_raw_memory
 from .time_utils import now_string, today_kst_date
 
-
-def parse_schedule_date(item: dict):
-    """기억 항목의 일정 날짜를 비교 가능한 date 객체로 변환합니다."""
-    schedule_date = item.get("schedule_date")
-    if not schedule_date:
-        return None
-    try:
-        return datetime.fromisoformat(schedule_date).date()
-    except ValueError:
-        return None
+# 조회에 쓰는 공통 컬럼. sqlite3.Row를 dict처럼 다루므로 기존 포매터가 그대로 동작합니다.
+_COLUMNS = (
+    "id, seq, type, content, schedule_date, reminder_at, reminded, reminded_at,"
+    " done, done_at, archived, archived_at, archive_reason, source, created_at"
+)
 
 
-def renumber_memories(memories: list) -> list:
-    """삭제와 최적화 후 기억 ID가 연속되도록 다시 번호를 부여합니다."""
-    for index, item in enumerate(memories, start=1):
-        item["id"] = index
-    return memories
+def _rows_to_dicts(rows) -> list[dict]:
+    return [dict(row) for row in rows]
 
 
-def optimize_memory_items(items: list) -> list:
-    """지난 일정과 오래된 항목을 정리해 기억 데이터 크기를 제한합니다."""
-    today = today_kst_date()
-    kept = []
-    for item in items:
-        if item.get("type") == "schedule":
-            schedule_date = parse_schedule_date(item)
-            if schedule_date and schedule_date < today:
-                continue
-        kept.append(item)
+def archive_past_schedules() -> int:
+    """지난 날짜의 일정을 보관 처리하고 처리한 개수를 반환합니다.
 
-    # 아이디어는 최근 항목을 우선 보존합니다.
-    ideas = [item for item in kept if item.get("type") == "idea"]
-    if len(ideas) > MAX_IDEA_ITEMS:
-        ids_to_keep = {item.get("id") for item in ideas[-MAX_IDEA_ITEMS:]}
-        kept = [
-            item for item in kept
-            if item.get("type") != "idea" or item.get("id") in ids_to_keep
-        ]
-
-    # 전체 제한을 넘으면 일반 메모부터 오래된 순서로 제거합니다.
-    while len(kept) > MAX_MEMORY_ITEMS:
-        note_index = next(
-            (index for index, item in enumerate(kept) if item.get("type") == "note"),
-            None,
+    예전 `prune_past_schedules`는 항목을 영구 삭제했습니다. 이제는 `archived`
+    플래그만 세우므로 히스토리가 남습니다.
+    """
+    today = today_kst_date().isoformat()
+    with transaction() as tx:
+        rows = tx.execute(
+            "SELECT id FROM items WHERE archived = 0 AND type = 'schedule'"
+            " AND schedule_date IS NOT NULL AND schedule_date < ?",
+            (today,),
+        ).fetchall()
+        if not rows:
+            return 0
+        tx.execute(
+            "UPDATE items SET archived = 1, archived_at = ?, archive_reason = 'past_schedule'"
+            " WHERE archived = 0 AND type = 'schedule'"
+            " AND schedule_date IS NOT NULL AND schedule_date < ?",
+            (now_string(), today),
         )
-        if note_index is None:
-            kept = kept[-MAX_MEMORY_ITEMS:]
-            break
-        kept.pop(note_index)
-    return renumber_memories(kept)
+        for row in rows:
+            log_event(
+                tx,
+                "item.archived",
+                entity="item",
+                entity_id=row["id"],
+                source="system",
+                payload={"reason": "past_schedule"},
+            )
+        return len(rows)
 
 
-def load_memory() -> list:
-    return load_raw_memory()
-
-
-def save_memory(items: list) -> None:
-    """최적화 규칙을 적용한 뒤 전체 기억을 저장합니다."""
-    save_raw_memory(optimize_memory_items(items))
-
-
-def prune_past_schedules() -> int:
-    """지난 날짜의 일정을 제거하고 제거한 개수를 반환합니다."""
-    with memory_lock:
-        before = load_json_file(MEMORY_FILE, [])
-        if not isinstance(before, list):
-            before = []
-        after = optimize_memory_items(before)
-        save_raw_memory(after)
-        return max(0, len(before) - len(after))
-
-
-def add_memory(text: str) -> dict:
+def add_memory(text: str, source: str = "telegram") -> dict:
     """메시지를 분류하고 날짜·알림 정보를 붙여 새 기억으로 저장합니다."""
     memory_type = classify_memory(text)
     schedule_date = extract_schedule_date(text)
@@ -92,41 +72,137 @@ def add_memory(text: str) -> dict:
         except ValueError:
             schedule_date = None
 
-    with memory_lock:
-        memories = load_memory()
-        item = {
-            "id": len(memories) + 1,
-            "type": memory_type,
-            "content": text.strip(),
-            "schedule_date": schedule_date,
-            "reminder_at": reminder_at,
-            "reminded": False,
-            "created_at": now_string(),
-            "done": False,
-        }
-        memories.append(item)
-        save_memory(memories)
-        final_memories = load_memory()
-        return final_memories[-1] if final_memories else item
+    item_id = new_id()
+    created_at = now_string()
+    content = text.strip()
+
+    with transaction() as tx:
+        seq = next_seq(tx, "items")
+        tx.execute(
+            "INSERT INTO items (id, seq, type, content, schedule_date, reminder_at,"
+            " source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (item_id, seq, memory_type, content, schedule_date, reminder_at, source, created_at),
+        )
+        log_event(
+            tx,
+            "item.created",
+            entity="item",
+            entity_id=item_id,
+            source=source,
+            payload={
+                "seq": seq,
+                "type": memory_type,
+                "content": content,
+                "schedule_date": schedule_date,
+                "reminder_at": reminder_at,
+            },
+        )
+
+    return {
+        "id": item_id,
+        "seq": seq,
+        "type": memory_type,
+        "content": content,
+        "schedule_date": schedule_date,
+        "reminder_at": reminder_at,
+        "reminded": 0,
+        "done": 0,
+        "archived": 0,
+        "source": source,
+        "created_at": created_at,
+    }
 
 
-def get_recent_memories(limit: int = 30) -> list:
-    return load_memory()[-limit:]
+def get_recent_memories(limit: int = 30) -> list[dict]:
+    """보관되지 않은 최근 항목을 오래된 순서로 반환합니다."""
+    rows = get_connection().execute(
+        f"SELECT {_COLUMNS} FROM items WHERE archived = 0"
+        " ORDER BY seq DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return _rows_to_dicts(reversed(rows))
 
 
-def get_active_schedules() -> list:
-    prune_past_schedules()
-    return [
-        item for item in load_memory()
-        if item.get("type") == "schedule" and not item.get("done", False)
-    ]
+def get_active_schedules() -> list[dict]:
+    """미완료 일정을 반환합니다(지난 일정은 먼저 보관 처리)."""
+    archive_past_schedules()
+    rows = get_connection().execute(
+        f"SELECT {_COLUMNS} FROM items"
+        " WHERE archived = 0 AND type = 'schedule' AND done = 0 ORDER BY seq",
+    ).fetchall()
+    return _rows_to_dicts(rows)
 
 
-def get_ideas() -> list:
-    return [item for item in load_memory() if item.get("type") == "idea"]
+def get_ideas() -> list[dict]:
+    rows = get_connection().execute(
+        f"SELECT {_COLUMNS} FROM items WHERE archived = 0 AND type = 'idea' ORDER BY seq",
+    ).fetchall()
+    return _rows_to_dicts(rows)
 
 
-def format_memories(items: list) -> str:
+def get_due_reminders(now_str: str) -> list[dict]:
+    """알림 시각이 지났고 아직 보내지 않은 항목을 반환합니다."""
+    rows = get_connection().execute(
+        f"SELECT {_COLUMNS} FROM items"
+        " WHERE archived = 0 AND type = 'schedule' AND done = 0 AND reminded = 0"
+        " AND reminder_at IS NOT NULL AND reminder_at <= ? ORDER BY reminder_at",
+        (now_str,),
+    ).fetchall()
+    return _rows_to_dicts(rows)
+
+
+def mark_reminded(item_id: str) -> bool:
+    """UUID로 항목을 찾아 알림 발송 완료로 표시합니다.
+
+    예전에는 매 저장마다 재부여되는 정수 번호로 항목을 다시 찾았기 때문에,
+    그사이 다른 항목이 정리되면 엉뚱한 항목에 표시가 찍혔습니다.
+    """
+    with transaction() as tx:
+        cursor = tx.execute(
+            "UPDATE items SET reminded = 1, reminded_at = ? WHERE id = ? AND reminded = 0",
+            (now_string(), item_id),
+        )
+        if cursor.rowcount == 0:
+            return False
+        log_event(tx, "item.reminded", entity="item", entity_id=item_id, source="reminder_loop")
+        return True
+
+
+def mark_done(seq: int) -> bool:
+    """사용자가 말한 번호(seq)로 항목을 완료 처리합니다."""
+    with transaction() as tx:
+        row = tx.execute(
+            "SELECT id FROM items WHERE seq = ? AND archived = 0", (seq,)
+        ).fetchone()
+        if row is None:
+            return False
+        tx.execute(
+            "UPDATE items SET done = 1, done_at = ? WHERE id = ?", (now_string(), row["id"])
+        )
+        log_event(
+            tx, "item.done", entity="item", entity_id=row["id"], source="telegram",
+            payload={"seq": seq},
+        )
+        return True
+
+
+def archive_all_memories() -> int:
+    """모든 기억을 보관 처리합니다. 조회에서 사라지지만 데이터는 남습니다."""
+    with transaction() as tx:
+        cursor = tx.execute(
+            "UPDATE items SET archived = 1, archived_at = ?, archive_reason = 'forget_all'"
+            " WHERE archived = 0",
+            (now_string(),),
+        )
+        count = cursor.rowcount
+        log_event(
+            tx, "item.archived_all", entity="system", source="telegram",
+            payload={"count": count},
+        )
+        return count
+
+
+def format_memories(items: list[dict]) -> str:
     """기억 목록을 Telegram에서 읽기 쉬운 텍스트로 변환합니다."""
     if not items:
         return "저장된 기억이 없습니다."
@@ -136,7 +212,7 @@ def format_memories(items: list) -> str:
         date_part = f", 일정일: {item['schedule_date']}" if item.get("schedule_date") else ""
         reminder_part = f", 알림: {item['reminder_at']}" if item.get("reminder_at") else ""
         lines.append(
-            f"[{item['id']}] ({item.get('type', 'note')}, {status}{date_part}{reminder_part}) "
+            f"[{item['seq']}] ({item.get('type', 'note')}, {status}{date_part}{reminder_part}) "
             f"{item['content']} - 저장시각: {item['created_at']}"
         )
     return "\n".join(lines)
@@ -163,28 +239,9 @@ def format_schedule_by_date() -> str:
         for item in dated[schedule_date]:
             reminder = item.get("reminder_at")
             reminder_text = f" / 알림: {reminder[11:16]}" if reminder else ""
-            lines.append(f"{item['id']}. {item['content']}{reminder_text}")
+            lines.append(f"{item['seq']}. {item['content']}{reminder_text}")
         lines.append("")
     if undated:
         lines.append("날짜 미정")
-        lines.extend(f"{item['id']}. {item['content']}" for item in undated)
+        lines.extend(f"{item['seq']}. {item['content']}" for item in undated)
     return "\n".join(lines).strip()
-
-
-def mark_done(memory_id: int) -> bool:
-    """지정한 기억 항목을 완료 처리하고 성공 여부를 반환합니다."""
-    with memory_lock:
-        memories = load_memory()
-        for item in memories:
-            if item.get("id") == memory_id:
-                item["done"] = True
-                item["done_at"] = now_string()
-                save_memory(memories)
-                return True
-        return False
-
-
-def delete_all_memory() -> None:
-    """저장된 전체 기억을 비웁니다."""
-    with memory_lock:
-        save_raw_memory([])

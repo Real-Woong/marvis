@@ -1,9 +1,13 @@
-"""사이드 프로젝트 진행 상태를 저장하고 조회/수정합니다."""
+"""사이드 프로젝트 진행 상태를 저장하고 조회/수정합니다.
+
+문장에서 의도를 뽑아내는 부분(_NAME_STOPWORDS 이하)은 Phase 1에서 function
+calling으로 대체할 예정이라 이번 단계에서는 그대로 두고, 저장소만 SQLite로
+옮겼습니다.
+"""
 
 import re
 
-from .settings import PROJECTS_FILE
-from .storage import load_json_file, memory_lock, save_json_file
+from .db import get_connection, log_event, new_id, next_seq, transaction
 from .time_utils import now_string
 
 STATUS_IN_PROGRESS = "진행중"
@@ -20,6 +24,11 @@ ACTION_NEXT_STEPS = "next_steps"
 ACTION_MUTE_BRIEFING = "mute_briefing"
 ACTION_UNMUTE_BRIEFING = "unmute_briefing"
 
+_COLUMNS = (
+    "id, seq, name, status, sub_status, next_steps, note, muted_from_briefing,"
+    " archived, created_at, updated_at"
+)
+
 # '프로젝트'와 붙어 있는 단어를 이름으로 오인하지 않도록 걸러내는 동작어입니다.
 _NAME_STOPWORDS = {
     "시작할거야", "시작해", "시작", "새로", "추가해줘", "추가",
@@ -31,31 +40,29 @@ _NAME_STOPWORDS = {
 }
 
 
-def load_projects() -> list:
-    data = load_json_file(PROJECTS_FILE, [])
-    return data if isinstance(data, list) else []
+def load_projects() -> list[dict]:
+    rows = get_connection().execute(
+        f"SELECT {_COLUMNS} FROM projects WHERE archived = 0 ORDER BY seq"
+    ).fetchall()
+    return [dict(row) for row in rows]
 
 
-def save_projects(items: list) -> None:
-    save_json_file(PROJECTS_FILE, items)
+def get_project(seq: int) -> dict | None:
+    row = get_connection().execute(
+        f"SELECT {_COLUMNS} FROM projects WHERE seq = ? AND archived = 0", (seq,)
+    ).fetchone()
+    return dict(row) if row else None
 
 
-def get_project(project_id: int) -> dict | None:
-    for item in load_projects():
-        if item.get("id") == project_id:
-            return item
-    return None
+def get_active_projects() -> list[dict]:
+    return [item for item in load_projects() if item["status"] == STATUS_IN_PROGRESS]
 
 
-def get_active_projects() -> list:
-    return [item for item in load_projects() if item.get("status") == STATUS_IN_PROGRESS]
+def get_stopped_projects() -> list[dict]:
+    return [item for item in load_projects() if item["status"] == STATUS_STOPPED]
 
 
-def get_stopped_projects() -> list:
-    return [item for item in load_projects() if item.get("status") == STATUS_STOPPED]
-
-
-def get_briefing_projects() -> list:
+def get_briefing_projects() -> list[dict]:
     """아침 브리핑에 읽어줄 진행중 프로젝트만 반환합니다(음소거된 프로젝트는 제외)."""
     return [item for item in get_active_projects() if not item.get("muted_from_briefing")]
 
@@ -160,14 +167,14 @@ def format_all_projects() -> str:
     if not projects:
         return "등록된 프로젝트가 없습니다."
 
-    active = [item for item in projects if item.get("status") == STATUS_IN_PROGRESS]
-    stopped = [item for item in projects if item.get("status") == STATUS_STOPPED]
+    active = [item for item in projects if item["status"] == STATUS_IN_PROGRESS]
+    stopped = [item for item in projects if item["status"] == STATUS_STOPPED]
 
     lines = [f"진행중 ({len(active)}개)"]
     if active:
         for item in active:
             next_steps = item.get("next_steps") or "다음 할 일 미정"
-            lines.append(f"[{item['id']}] {item['name']} - 다음 할 일: {next_steps}")
+            lines.append(f"[{item['seq']}] {item['name']} - 다음 할 일: {next_steps}")
     else:
         lines.append("없음")
 
@@ -178,7 +185,7 @@ def format_all_projects() -> str:
             sub_status = item.get("sub_status")
             sub_status_part = f" ({sub_status})" if sub_status else ""
             note = item.get("note") or ""
-            lines.append(f"[{item['id']}] {item['name']}{sub_status_part}: {note}")
+            lines.append(f"[{item['seq']}] {item['name']}{sub_status_part}: {note}")
     else:
         lines.append("없음")
 
@@ -191,52 +198,97 @@ def add_project(
     next_steps: str | None = None,
     note: str | None = None,
     sub_status: str | None = None,
+    source: str = "telegram",
 ) -> dict:
-    with memory_lock:
-        projects = load_projects()
-        item = {
-            "id": len(projects) + 1,
-            "name": name.strip(),
-            "status": status,
-            "sub_status": sub_status,
-            "next_steps": next_steps,
-            "note": note,
-            "created_at": now_string(),
-            "updated_at": now_string(),
-        }
-        projects.append(item)
-        save_projects(projects)
-        return item
+    project_id = new_id()
+    created_at = now_string()
+    clean_name = name.strip()
+
+    with transaction() as tx:
+        seq = next_seq(tx, "projects")
+        tx.execute(
+            "INSERT INTO projects (id, seq, name, status, sub_status, next_steps, note,"
+            " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (project_id, seq, clean_name, status, sub_status, next_steps, note,
+             created_at, created_at),
+        )
+        log_event(
+            tx, "project.created", entity="project", entity_id=project_id, source=source,
+            payload={"seq": seq, "name": clean_name, "status": status},
+        )
+
+    return {
+        "id": project_id,
+        "seq": seq,
+        "name": clean_name,
+        "status": status,
+        "sub_status": sub_status,
+        "next_steps": next_steps,
+        "note": note,
+        "muted_from_briefing": 0,
+        "archived": 0,
+        "created_at": created_at,
+        "updated_at": created_at,
+    }
 
 
 def update_project(
-    project_id: int,
+    seq: int,
     status: str | None = None,
     sub_status: str | None = None,
     next_steps: str | None = None,
     note: str | None = None,
     muted_from_briefing: bool | None = None,
+    source: str = "telegram",
 ) -> bool:
-    """번호로 프로젝트를 찾아 전달된 필드만 갱신합니다."""
-    with memory_lock:
-        projects = load_projects()
-        for item in projects:
-            if item.get("id") != project_id:
-                continue
-            if status is not None:
-                item["status"] = status
-                # 다시 진행중으로 바뀌면 중단 사유 태그는 의미가 없어집니다.
-                if status == STATUS_IN_PROGRESS:
-                    item["sub_status"] = None
-            if sub_status is not None:
-                item["sub_status"] = sub_status
-            if next_steps is not None:
-                item["next_steps"] = next_steps
-            if note is not None:
-                item["note"] = note
-            if muted_from_briefing is not None:
-                item["muted_from_briefing"] = muted_from_briefing
-            item["updated_at"] = now_string()
-            save_projects(projects)
-            return True
-        return False
+    """번호(seq)로 프로젝트를 찾아 전달된 필드만 갱신합니다."""
+    assignments: list[str] = []
+    values: list = []
+    changes: dict = {}
+
+    if status is not None:
+        assignments.append("status = ?")
+        values.append(status)
+        changes["status"] = status
+        # 다시 진행중으로 바뀌면 중단 사유 태그는 의미가 없어집니다.
+        if status == STATUS_IN_PROGRESS:
+            assignments.append("sub_status = NULL")
+            changes["sub_status"] = None
+    if sub_status is not None:
+        assignments.append("sub_status = ?")
+        values.append(sub_status)
+        changes["sub_status"] = sub_status
+    if next_steps is not None:
+        assignments.append("next_steps = ?")
+        values.append(next_steps)
+        changes["next_steps"] = next_steps
+    if note is not None:
+        assignments.append("note = ?")
+        values.append(note)
+        changes["note"] = note
+    if muted_from_briefing is not None:
+        assignments.append("muted_from_briefing = ?")
+        values.append(1 if muted_from_briefing else 0)
+        changes["muted_from_briefing"] = bool(muted_from_briefing)
+
+    if not assignments:
+        return get_project(seq) is not None
+
+    assignments.append("updated_at = ?")
+    values.append(now_string())
+
+    with transaction() as tx:
+        row = tx.execute(
+            "SELECT id FROM projects WHERE seq = ? AND archived = 0", (seq,)
+        ).fetchone()
+        if row is None:
+            return False
+        tx.execute(
+            f"UPDATE projects SET {', '.join(assignments)} WHERE id = ?",
+            (*values, row["id"]),
+        )
+        log_event(
+            tx, "project.updated", entity="project", entity_id=row["id"], source=source,
+            payload={"seq": seq, "changes": changes},
+        )
+        return True

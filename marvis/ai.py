@@ -2,9 +2,15 @@
 
 import google.generativeai as genai
 
-from .memory import format_memories, format_schedule_by_date, get_ideas, get_recent_memories, prune_past_schedules
+from .memory import (
+    archive_past_schedules,
+    format_memories,
+    format_schedule_by_date,
+    get_ideas,
+    get_recent_memories,
+)
 from .projects import format_all_projects
-from .settings import GEMINI_API_KEY, MAX_RECENT_CONTEXT_ITEMS
+from .settings import GEMINI_API_KEY, MAX_IDEA_CONTEXT_ITEMS, MAX_RECENT_CONTEXT_ITEMS
 from .time_utils import today_kst_date
 
 
@@ -24,11 +30,11 @@ def get_model():
 
 def ask_gemini(user_text: str) -> str:
     """현재 일정과 최근 기억을 포함한 프롬프트로 개인화 답변을 요청합니다."""
-    # 지난 일정이 AI 문맥에 포함되지 않도록 요청 직전에 정리합니다.
-    prune_past_schedules()
+    # 지난 일정이 AI 문맥에 포함되지 않도록 요청 직전에 보관 처리합니다.
+    archive_past_schedules()
     active_schedules = format_schedule_by_date()
     recent_memories = format_memories(get_recent_memories(limit=MAX_RECENT_CONTEXT_ITEMS))
-    ideas = format_memories(get_ideas()[-20:])
+    ideas = format_memories(get_ideas()[-MAX_IDEA_CONTEXT_ITEMS:])
     projects = format_all_projects()
     prompt = f"""
 너는 사용자의 개인 AI 비서 'Marvis'야.
@@ -78,7 +84,7 @@ def generate_morning_briefing() -> str:
     """
     # ask_gemini와 달리 사용자 메시지가 없는 능동 발화이므로, 질문에 답하는
     # 대신 오늘 일정을 요약해서 먼저 브리핑하라고 역할을 명확히 지정합니다.
-    prune_past_schedules()
+    archive_past_schedules()
     active_schedules = format_schedule_by_date()
     prompt = f"""
 너는 사용자의 개인 비서 'Marvis'야.
