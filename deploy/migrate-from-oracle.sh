@@ -26,6 +26,9 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REMOTE_DIR="~/marvis-bot"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 
+# 검증 단계가 marvis 패키지를 import하므로 어디서 실행하든 루트로 옮깁니다.
+cd "$PROJECT_DIR"
+
 echo "대상   $TARGET"
 echo "받는곳 $PROJECT_DIR"
 echo
@@ -74,4 +77,10 @@ PYEOF
 
 echo
 echo "복사 완료. 오라클 서비스는 멈춘 상태이며 인스턴스는 살아 있습니다."
+echo
+echo "주의: 오라클 봇을 다시 켜지 마세요. 두 봇이 같은 토큰으로 동시에"
+echo "      폴링하면 텔레그램이 409를 내며 둘 다 불안정해집니다."
+echo "      되돌리려면 맥 데몬을 먼저 내리세요:"
+echo "        sudo ./deploy/uninstall-macos.sh"
+echo
 echo "다음: sudo ./deploy/install-macos.sh"
