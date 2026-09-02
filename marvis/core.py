@@ -5,15 +5,25 @@
 `!스케쥴`도 없었습니다). 어댑터는 이제 전송 방법만 알고, 무엇을 할지는 전부
 여기서 결정합니다.
 
-Phase 0의 범위는 구조 통합입니다. 정규식 라우팅과 "저장 후 답변도 한 번 더"
-동작은 의도적으로 그대로 뒀습니다. Phase 1에서 function calling으로 바꿀 때
-한꺼번에 걷어냅니다.
+Phase 1에서 라우터가 둘이 됐습니다. MARVIS_ROUTER가 어느 쪽이 사용자에게
+응답할지 정합니다.
+
+    regex   정규식만. Phase 0까지의 동작.
+    shadow  정규식이 응답하고, LLM은 나란히 돌며 로그에만 남는다.
+            두 판단이 다르면 router.disagreed 이벤트가 찍힌다.
+    llm     LLM 라우터가 응답한다.
+
+shadow가 기본값입니다. 배포해도 사용자 경험이 그대로이고, 그 기간에 쌓이는
+불일치 기록이 eval 골든셋의 재료가 됩니다.
 """
 
 import logging
+import os
+import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
 
+from .agent import run_turn
 from .ai import ask_gemini
 from .db import log_event, transaction
 from .memory import add_memory, archive_past_schedules, format_schedule_by_date
@@ -35,6 +45,16 @@ from .projects import (
     update_project,
 )
 from .schedule_parser import detect_message_intent
+from .settings import ROUTER_MODE
+
+ROUTER_REGEX = "regex"
+ROUTER_SHADOW = "shadow"
+ROUTER_LLM = "llm"
+
+
+def router_mode() -> str:
+    """현재 라우터 모드. 호출 시점에 읽으므로 재시작 없이 바꿀 수 있습니다."""
+    return (os.getenv("MARVIS_ROUTER") or ROUTER_MODE).strip().lower()
 
 SOURCE_TELEGRAM = "telegram"
 SOURCE_SIRI = "siri"
@@ -116,6 +136,118 @@ def handle_message(text: str, source: str = SOURCE_TELEGRAM) -> Iterator[Reply]:
     if not text:
         return
 
+    mode = router_mode()
+    if mode == ROUTER_LLM:
+        yield from _handle_with_llm(text, source)
+        return
+
+    if mode == ROUTER_SHADOW:
+        # 사용자에게 가는 건 정규식 결과입니다. LLM은 뒤에서 조용히 돌립니다.
+        replies = list(_handle_with_regex(text, source))
+        _run_shadow_async(text, source, replies)
+        yield from replies
+        return
+
+    yield from _handle_with_regex(text, source)
+
+
+def _handle_with_llm(text: str, source: str) -> Iterator[Reply]:
+    """LLM 라우터. 도구 호출 결과를 모델이 직접 마무리 문장으로 정리합니다.
+
+    정규식 경로와 달리 "기억했습니다" 뒤에 잡담이 한 번 더 나가지 않습니다.
+    저장했다는 사실을 모델이 알고 한 문장으로 답하기 때문입니다.
+    """
+    archive_past_schedules()
+    yield Reply("생각 중입니다...", ack=True)
+
+    from .llm.factory import get_client
+
+    try:
+        result = run_turn(get_client(), text, source=source)
+    except Exception:
+        logging.exception("LLM router failed")
+        yield Reply("처리하는 중 오류가 발생했습니다.")
+        return
+
+    # 되묻는 중이면 음성까지 보낼 필요는 없습니다.
+    yield Reply(result.text, speak=result.clarify is None)
+
+
+def _shadow_compare(text: str, source: str, regex_replies: list[Reply]) -> None:
+    """LLM 판단을 기록하고, 정규식과 다르면 표시해 둡니다."""
+    from .llm.factory import get_client
+
+    try:
+        result = run_turn(get_client(), text, source=f"{source}:shadow")
+    except Exception:
+        logging.exception("Shadow router failed")
+        return
+
+    regex_route = _classify_regex_route(text)
+    llm_tool = result.primary_tool
+    agrees = _routes_agree(regex_route, llm_tool)
+
+    try:
+        with transaction() as tx:
+            log_event(
+                tx,
+                "router.agreed" if agrees else "router.disagreed",
+                entity="turn",
+                source=source,
+                payload={
+                    "text": text,
+                    "regex_route": regex_route,
+                    "llm_tool": llm_tool,
+                    "llm_args": result.tool_calls[0]["args"] if result.tool_calls else None,
+                    "llm_reply": result.text,
+                    "regex_reply": regex_replies[0].text if regex_replies else None,
+                },
+            )
+    except Exception:
+        logging.exception("Failed to log the shadow comparison")
+
+
+def _run_shadow_async(text: str, source: str, regex_replies: list[Reply]) -> None:
+    """사용자 응답을 붙잡아 두지 않도록 별도 스레드에서 비교합니다."""
+    threading.Thread(
+        target=_shadow_compare, args=(text, source, regex_replies), daemon=True
+    ).start()
+
+
+# 정규식 경로와 LLM 도구를 견줄 수 있게 맞춰 놓은 대응표입니다.
+_ROUTE_TO_TOOL = {
+    "save": "save_memory",
+    "query": "list_schedule",
+    "chat": None,
+    "command.schedule": "list_schedule",
+    "command.projects": "list_projects",
+    "project": "update_project",
+}
+
+
+def _classify_regex_route(text: str) -> str:
+    """정규식이 이 문장을 어느 경로로 보낼지, 상태를 바꾸지 않고 알아냅니다."""
+    if text == "!스케쥴":
+        return "command.schedule"
+    if text == "!프로젝트":
+        return "command.projects"
+    if detect_project_action(text):
+        return "project"
+    return detect_message_intent(text)
+
+
+def _routes_agree(regex_route: str, llm_tool: str | None) -> bool:
+    expected = _ROUTE_TO_TOOL.get(regex_route, "__unknown__")
+    if regex_route == "project":
+        # 프로젝트 경로는 추가/갱신 어느 쪽이어도 같은 판단으로 봅니다.
+        return llm_tool in ("update_project", "add_project")
+    if regex_route == "query":
+        return llm_tool in ("list_schedule", "list_memories", "list_projects")
+    return expected == llm_tool
+
+
+def _handle_with_regex(text: str, source: str) -> Iterator[Reply]:
+    """Phase 0까지의 경로. 전환이 끝나면 이 함수와 schedule_parser를 지웁니다."""
     archive_past_schedules()
 
     if text == "!스케쥴":
