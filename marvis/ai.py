@@ -1,7 +1,11 @@
-"""저장된 기억을 문맥으로 구성하고 Gemini 답변을 생성합니다."""
+"""저장된 기억을 문맥으로 구성하고 답변을 생성합니다.
 
-import google.generativeai as genai
+정규식 라우터가 쓰는 단발 프롬프트 경로입니다. 도구를 쓰지 않고 기억 전문을
+프롬프트에 실어 보냅니다. MARVIS_ROUTER=llm으로 전환하면 ask_gemini는 쓰이지
+않고 아침 브리핑만 남습니다.
+"""
 
+from .llm.factory import get_client
 from .memory import (
     archive_past_schedules,
     format_memories,
@@ -10,22 +14,8 @@ from .memory import (
     get_recent_memories,
 )
 from .projects import format_all_projects
-from .settings import GEMINI_API_KEY, MAX_IDEA_CONTEXT_ITEMS, MAX_RECENT_CONTEXT_ITEMS
+from .settings import MAX_IDEA_CONTEXT_ITEMS, MAX_RECENT_CONTEXT_ITEMS
 from .time_utils import today_kst_date
-
-
-_model = None
-
-
-def get_model():
-    """Gemini 클라이언트를 최초 요청 시 한 번만 생성해 재사용합니다."""
-    global _model
-    if _model is None:
-        if not GEMINI_API_KEY:
-            raise ValueError("GEMINI_API_KEY is missing in .env")
-        genai.configure(api_key=GEMINI_API_KEY)
-        _model = genai.GenerativeModel("gemini-2.5-flash")
-    return _model
 
 
 def ask_gemini(user_text: str) -> str:
@@ -70,10 +60,8 @@ Marvis의 핵심 역할:
 사용자 메시지:
 {user_text}
 """
-    response = get_model().generate_content(prompt)
-    if not response.text:
-        return "죄송합니다. 답변을 생성하지 못했습니다."
-    return response.text.strip()
+    answer = get_client().generate_text(prompt)
+    return answer or "죄송합니다. 답변을 생성하지 못했습니다."
 
 
 def generate_morning_briefing() -> str:
@@ -101,7 +89,5 @@ def generate_morning_briefing() -> str:
 오늘 날짜별 스케쥴:
 {active_schedules}
 """
-    response = get_model().generate_content(prompt)
-    if not response.text:
-        return "오늘 아침 일정은 확인하지 못했습니다."
-    return response.text.strip()
+    briefing = get_client().generate_text(prompt)
+    return briefing or "오늘 아침 일정은 확인하지 못했습니다."

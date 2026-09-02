@@ -78,6 +78,36 @@ source /Users/jinwoong_kim/Desktop/project/Project_AI/_venvs/ai/bin/activate
 python -m unittest discover -s tests
 ```
 
+Running on the Mac mini
+
+Marvis runs as a `LaunchDaemon`, so it starts at boot without anyone logging in
+and restarts if it crashes. It uses its own virtualenv at
+`_venvs/marvis` (Python 3.12) rather than the shared `ai` environment — another
+project's `pip install` should not be able to break a service that runs all day.
+
+Moving from the Ubuntu server:
+
+```bash
+./deploy/migrate-from-oracle.sh ubuntu@<server-ip> ~/.ssh/<key>
+sudo ./deploy/install-macos.sh
+```
+
+The first script stops the remote bot, checkpoints its WAL, copies `.env` and
+`marvis.db` over, and verifies the database. It leaves the Oracle instance
+alive — only stopped — so you can go back. The second installs the daemon and
+sets `pmset` so the machine never sleeps and comes back after a power cut.
+
+```bash
+sudo launchctl print system/com.marvis.bot | head -20   # status
+tail -f ~/Library/Logs/marvis/bot.log                   # logs
+sudo ./deploy/uninstall-macos.sh                        # stop and remove
+```
+
+Two things that silently break an always-on Mac: sleep (handled by the
+installer) and FileVault — with FileVault on, a reboot leaves the disk locked
+until someone logs in, and the daemon will not start until then. Check with
+`fdesetup status`.
+
 Starting Over
 
 `/forget_all_marvis` in Telegram archives: items drop out of every query and
@@ -165,7 +195,7 @@ marvis-bot/
 │   │   ├── tools.py       # Tool schemas and implementations, in one place
 │   │   ├── gemini.py      # google-genai adapter
 │   │   └── factory.py     # Provider selection
-│   ├── ai.py              # Legacy single-shot prompt (regex router only)
+│   ├── ai.py              # Single-shot prompt (regex router and briefing)
 │   ├── db.py              # SQLite connection, schema, event log
 │   ├── migrate.py         # One-time JSON to SQLite migration
 │   ├── reset.py           # Destructive reset CLI, with backup
@@ -178,6 +208,11 @@ marvis-bot/
 │   ├── storage.py         # Settings stored in SQLite
 │   ├── settings.py        # Environment and path settings
 │   └── time_utils.py      # Korea-time helpers
+├── deploy/
+│   ├── com.marvis.bot.plist   # macOS LaunchDaemon
+│   ├── install-macos.sh       # Install the daemon and power settings
+│   ├── uninstall-macos.sh
+│   └── migrate-from-oracle.sh # Move data off the Ubuntu server
 ├── evals/
 │   ├── golden.jsonl       # Router golden set
 │   └── run_eval.py        # Scores tool choice and argument accuracy
@@ -468,7 +503,7 @@ marvis-bot/
 │   │   ├── tools.py       # 도구 스키마와 구현을 한 자리에
 │   │   ├── gemini.py      # google-genai 어댑터
 │   │   └── factory.py     # 프로바이더 선택
-│   ├── ai.py              # 구 단발 프롬프트 (정규식 라우터 전용)
+│   ├── ai.py              # 단발 프롬프트 (정규식 라우터·브리핑)
 │   ├── db.py              # SQLite 연결·스키마·이벤트 로그
 │   ├── migrate.py         # JSON → SQLite 1회성 마이그레이션
 │   ├── reset.py           # 실제 삭제 CLI (백업 후 진행)
@@ -481,6 +516,11 @@ marvis-bot/
 │   ├── storage.py         # 설정 값 저장 (SQLite)
 │   ├── settings.py        # 환경 변수 및 경로 설정
 │   └── time_utils.py      # 한국 시간 유틸리티
+├── deploy/
+│   ├── com.marvis.bot.plist   # macOS LaunchDaemon
+│   ├── install-macos.sh       # 데몬·전원 설정 설치
+│   ├── uninstall-macos.sh
+│   └── migrate-from-oracle.sh # 우분투 서버에서 데이터 이전
 ├── evals/
 │   ├── golden.jsonl       # 라우터 골든셋
 │   └── run_eval.py        # 도구 선택·인자 정확도 채점

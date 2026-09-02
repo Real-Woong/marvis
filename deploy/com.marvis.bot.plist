@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.marvis.bot</string>
+
+  <!-- LaunchAgent가 아니라 LaunchDaemon입니다. 로그인하지 않아도,
+       재부팅 직후에도 뜹니다. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/jinwoong_kim/Desktop/project/Project_AI/_venvs/marvis/bin/python</string>
+    <string>bot.py</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/jinwoong_kim/Desktop/project/Project_AI/LLM/Marvis</string>
+
+  <key>UserName</key>
+  <string>jinwoong_kim</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- 죽으면 다시 띄웁니다. -->
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- 크래시 루프가 CPU를 태우지 않도록 재시작 간격을 둡니다. -->
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/jinwoong_kim/Library/Logs/marvis/bot.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/jinwoong_kim/Library/Logs/marvis/bot.error.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+    <!-- 로그 시각과 gTTS 파일명이 한글 경로에서 깨지지 않도록. -->
+    <key>LANG</key>
+    <string>ko_KR.UTF-8</string>
+  </dict>
+
+  <!-- 네트워크가 올라온 뒤에 시작하도록 힌트를 줍니다. 텔레그램은 폴링이라
+       일찍 떠도 재시도하지만, 부팅 직후 오류 로그를 줄여 줍니다. -->
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

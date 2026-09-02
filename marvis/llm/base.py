@@ -81,3 +81,11 @@ class LLMClient(Protocol):
         평범한 dict 목록입니다. 어댑터가 자기 SDK 타입으로 옮깁니다.
         """
         ...
+
+    def generate_text(self, prompt: str) -> str:
+        """도구 없이 한 번 호출해 텍스트만 받습니다.
+
+        정규식 라우터(ai.py)와 아침 브리핑이 씁니다. 전환이 끝나면 브리핑만
+        남습니다.
+        """
+        ...

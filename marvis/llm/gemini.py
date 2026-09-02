@@ -107,3 +107,16 @@ class GeminiClient:
             )
 
         return LLMResponse(text=text, tool_calls=calls, usage=usage, model=self.model)
+
+    def generate_text(self, prompt: str) -> str:
+        """도구 없이 한 번 호출합니다."""
+        response = self._client.models.generate_content(
+            model=self.model,
+            contents=prompt,
+            config=types.GenerateContentConfig(temperature=0.4),
+        )
+        try:
+            return (response.text or "").strip()
+        except Exception:
+            logging.warning("Gemini returned no usable text candidate")
+            return ""

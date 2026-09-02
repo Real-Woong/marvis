@@ -58,6 +58,9 @@ class FakeClient:
             return LLMResponse(text="(응답 없음)", usage=Usage())
         return self.responses.pop(0)
 
+    def generate_text(self, prompt):
+        return "[단발 답변]"
+
 
 def call(name, **args):
     return LLMResponse(tool_calls=[ToolCall(name=name, args=args, call_id=name)], usage=Usage())
@@ -270,6 +273,31 @@ class RouterModeTest(unittest.TestCase):
         self.assertTrue(core._routes_agree("project", "add_project"))
         self.assertFalse(core._routes_agree("save", None))
         self.assertFalse(core._routes_agree("chat", "save_memory"))
+
+
+class DependencyTest(unittest.TestCase):
+    """의존성이 requirements.txt와 실제로 맞는지."""
+
+    def test_no_module_imports_the_deprecated_sdk(self):
+        """레거시 google.generativeai는 requirements에서 빠졌다.
+
+        ai.py가 이걸 계속 import하고 있어서, 옛 SDK가 남아 있던 서버에서는
+        돌지만 깨끗한 환경에서는 기동 자체가 실패했다.
+        """
+        root = Path(__file__).resolve().parent.parent
+        offenders = [
+            path.relative_to(root)
+            for path in (root / "marvis").rglob("*.py")
+            if "import google.generativeai" in path.read_text(encoding="utf-8")
+        ]
+        self.assertEqual(offenders, [], f"레거시 SDK를 import하는 모듈: {offenders}")
+
+    def test_requirements_match_what_the_code_imports(self):
+        requirements = (Path(__file__).resolve().parent.parent / "requirements.txt").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("google-genai", requirements)
+        self.assertNotIn("google-generativeai", requirements)
 
 
 class ToolSurfaceTest(unittest.TestCase):
