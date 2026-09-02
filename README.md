@@ -134,6 +134,22 @@ Cases live in `evals/golden.jsonl`, one JSON object per line. A case may pin
 Each case runs against a throwaway database, and responses are cached by prompt
 hash so re-runs cost nothing unless the prompt changed.
 
+While `shadow` is running, the two routers' judgements pile up as
+`router.agreed` and `router.disagreed` events. Review them with:
+
+```bash
+python -m marvis.shadow_report              # summary and disagreement patterns
+python -m marvis.shadow_report --detail     # every disagreement in full
+python -m marvis.shadow_report --since 7    # last 7 days only
+python -m marvis.shadow_report --export     # write golden-set candidates
+```
+
+`--export` writes to `evals/candidates.jsonl`, never to the golden set. Each
+candidate carries `_review.confirmed: false` and the expected tool is only what
+the LLM happened to choose. Grading a model against its own answers is not a
+score, so read each one, correct it, add tags, then move it into
+`evals/golden.jsonl` by hand.
+
 Project Structure
 
 marvis-bot/
@@ -153,6 +169,7 @@ marvis-bot/
 │   ├── db.py              # SQLite connection, schema, event log
 │   ├── migrate.py         # One-time JSON to SQLite migration
 │   ├── reset.py           # Destructive reset CLI, with backup
+│   ├── shadow_report.py   # Router disagreement review
 │   ├── memory.py          # Memory management and formatting
 │   ├── projects.py        # Side project status
 │   ├── schedule_parser.py # Date/time parsing and classification
@@ -167,7 +184,8 @@ marvis-bot/
 ├── tests/
 │   ├── test_phase0.py     # Regression tests for the storage rewrite
 │   ├── test_phase1.py     # Tool validation and agent loop
-│   └── test_reset.py      # Reset scope and backup
+│   ├── test_reset.py      # Reset scope and backup
+│   └── test_shadow_report.py  # Candidate export safety
 ├── requirements.txt
 ├── README.md
 ├── .env.example
@@ -454,6 +472,7 @@ marvis-bot/
 │   ├── db.py              # SQLite 연결·스키마·이벤트 로그
 │   ├── migrate.py         # JSON → SQLite 1회성 마이그레이션
 │   ├── reset.py           # 실제 삭제 CLI (백업 후 진행)
+│   ├── shadow_report.py   # 라우터 불일치 검토
 │   ├── memory.py          # 기억 관리 및 출력 형식
 │   ├── projects.py        # 사이드 프로젝트 진행 상태
 │   ├── schedule_parser.py # 일정 분류와 날짜·시간 파싱
@@ -468,7 +487,8 @@ marvis-bot/
 ├── tests/
 │   ├── test_phase0.py     # 저장소 재작성 회귀 테스트
 │   ├── test_phase1.py     # 도구 검증과 에이전트 루프
-│   └── test_reset.py      # 초기화 범위와 백업
+│   ├── test_reset.py      # 초기화 범위와 백업
+│   └── test_shadow_report.py  # 후보 내보내기 안전장치
 ├── requirements.txt
 ├── README.md
 ├── .env.example
