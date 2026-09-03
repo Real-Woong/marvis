@@ -380,7 +380,13 @@ def _add_project(name, source="telegram", **_):
             "name": {"type": "string", "description": "프로젝트 이름(부분 일치 가능)"},
             "status": {"type": "string", "enum": list(STATUSES)},
             "sub_status": {"type": "string", "description": "중단 사유 태그. 예: 일시정지"},
-            "next_steps": {"type": "string", "description": "다음 할 일 한 줄. 기존 목록을 대체한다."},
+            "next_steps": {
+                "type": "string",
+                "description": (
+                    "다음에 할 일 한 줄. 기존 목록 맨 앞에 놓는다. 나머지 항목은 그대로 남는다. "
+                    "빈 문자열을 주면 목록을 비운다."
+                ),
+            },
             "note": {"type": "string", "description": "한 줄 요약"},
             "blockers": {
                 "type": "array",

@@ -178,10 +178,26 @@ class WriteBackLoopTest(unittest.TestCase):
         self.assertIn("next:\n  - 새 할 일\n", self._file())
         self.assertEqual(self._row()["next_steps"], "새 할 일")
 
-    def test_writing_next_steps_replaces_the_whole_list(self):
-        update_project(self.seq, next_steps="하나만 남는다")
+    def test_writing_next_steps_keeps_the_rest_of_the_backlog(self):
+        """네 줄짜리 next 를 한마디로 날려먹으면 안 됩니다."""
+        update_project(self.seq, next_steps="맨 앞에 온다")
 
-        self.assertNotIn("두 번째 할 일", self._file())
+        text = self._file()
+        self.assertIn("next:\n  - 맨 앞에 온다\n  - 첫 번째 할 일\n  - 두 번째 할 일\n", text)
+
+    def test_repeating_an_existing_item_moves_it_to_the_front(self):
+        update_project(self.seq, next_steps="두 번째 할 일")
+
+        text = self._file()
+        self.assertIn("next:\n  - 두 번째 할 일\n  - 첫 번째 할 일\n", text)
+        # 옮긴 것이지 복사한 게 아닙니다.
+        self.assertEqual(text.count("- 두 번째 할 일"), 1)
+
+    def test_an_empty_next_step_clears_the_list(self):
+        update_project(self.seq, next_steps="")
+
+        self.assertNotIn("첫 번째 할 일", self._file())
+        self.assertIsNone(self._row()["next_steps"])
 
     def test_the_edit_survives_the_next_sync(self):
         """이게 write-back 이 존재하는 이유입니다.

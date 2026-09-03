@@ -307,6 +307,21 @@ def _atomic_write(path, text: str) -> None:
     os.replace(tmp, path)
 
 
+def _current_list(status_path: str, key: str) -> list[str]:
+    """색인(= render.py가 읽은 결과)에서 지금 목록을 가져옵니다.
+
+    파일에서 직접 읽지 않는 이유는 파서를 둘로 만들지 않기 위해서입니다.
+    """
+    index = load_index(refresh=True, force=True)
+    if index is None:
+        return []
+    for record in index["projects"]:
+        if record.get("path") == status_path:
+            return [str(item).strip()
+                    for item in (record.get(key) or []) if str(item).strip()]
+    return []
+
+
 def _verify(status_path: str, expected: dict) -> dict:
     """색인을 다시 만들고, 단일 파서가 실제로 무엇을 읽었는지 확인합니다.
 
@@ -365,7 +380,17 @@ def write_back(
         frontmatter = _set_scalar(frontmatter, "status", secretary_status)
         expected["status"] = secretary_status
     if next_steps is not None:
-        items = [next_steps.strip()] if next_steps.strip() else []
+        # 목록을 통째로 갈아엎으면 백로그가 조용히 사라집니다. 소곤.zip처럼
+        # next가 네 줄인 프로젝트에서 "다음할일은 X" 한마디에 나머지 셋이
+        # 없어지면 안 됩니다. 맨 앞에 놓기만 합니다. 브리핑은 next[0]을
+        # 읽으므로 들리는 결과는 같고, 나머지는 파일에 남습니다.
+        # 빈 문자열은 "다음 할 일 없음"이라는 뜻이므로 그때만 비웁니다.
+        head = next_steps.strip()
+        if head:
+            items = [head] + [item for item in _current_list(status_path, "next")
+                              if item != head]
+        else:
+            items = []
         frontmatter = _set_list(frontmatter, "next", items)
         expected["next"] = items
     if blockers is not None:

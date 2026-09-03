@@ -818,7 +818,7 @@ update_project()
 | 고치는 것 | 어디에 |
 |---|---|
 | `status` | 프론트매터 `status:` |
-| `next_steps` | 프론트매터 `next:` (목록 전체를 대체) |
+| `next_steps` | 프론트매터 `next:` **맨 앞에 추가** (나머지는 남음, 빈 문자열이면 비움) |
 | `blockers` | 프론트매터 `blockers:` (빈 배열을 주면 비움) |
 | `note` | 본문 `## 한 줄 요약` 절 |
 | `muted_from_briefing` | **DB에만.** SECRETARY가 모르는 값입니다 |
