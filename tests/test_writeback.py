@@ -34,18 +34,22 @@ from marvis.db import get_connection, init_db  # noqa: E402
 from marvis.projects import (  # noqa: E402
     STATUS_IN_PROGRESS,
     STATUS_STOPPED,
+    add_project_note,
     add_project,
     get_briefing_projects,
     load_projects,
     update_project,
 )
 from marvis.secretary import (  # noqa: E402
+    NOTE_HEADING,
     WriteBackError,
     _set_list,
     _set_scalar,
     _set_summary,
     _to_secretary_status,
 )
+from marvis.core import _classify_regex_route, _handle_project_note  # noqa: E402
+from marvis.projects import parse_project_note  # noqa: E402
 from marvis.time_utils import today_kst_date  # noqa: E402
 
 # 이 저장소가 클론된 기계에는 SECRETARY 가 없을 수 있습니다.
@@ -273,6 +277,76 @@ class WriteBackLoopTest(unittest.TestCase):
         briefed = [p["next_steps"] for p in get_briefing_projects()]
         self.assertEqual(briefed, ["[막힘] 막혔다"])
 
+    # ------------------------------------------------------------ 텔레그램 메모
+
+    def test_a_note_creates_the_section_with_its_preamble(self):
+        entry = add_project_note(self.seq, "유저정보 수집도 필요할듯")
+
+        text = self._file()
+        self.assertIn(NOTE_HEADING, text)
+        self.assertIn(entry, text)
+        # 파일을 여는 사람이나 에이전트가 성격을 오해하지 않게 하는 표지입니다.
+        self.assertIn("<!-- 진웅이 텔레그램으로 그때그때 보낸 것.", text)
+        self.assertIn("유저정보 수집도 필요할듯", text)
+
+    def test_a_note_carries_its_own_date(self):
+        entry = add_project_note(self.seq, "언제 떠올린 건지 알아야 한다")
+
+        self.assertTrue(entry.startswith(f"- {today_kst_date().isoformat()} "))
+
+    def test_notes_accumulate_instead_of_replacing(self):
+        add_project_note(self.seq, "첫 번째 착상")
+        add_project_note(self.seq, "두 번째 착상")
+
+        text = self._file()
+        self.assertIn("첫 번째 착상", text)
+        self.assertIn("두 번째 착상", text)
+        self.assertLess(text.index("첫 번째 착상"), text.index("두 번째 착상"))
+
+    def test_a_note_never_touches_next_or_blockers(self):
+        """착상은 계획이 아닙니다. 브리핑도 안 바뀝니다."""
+        before = self._row()["next_steps"]
+        add_project_note(self.seq, "이건 아직 정해진 게 아니다")
+
+        text = self._file()
+        self.assertIn("next:\n  - 첫 번째 할 일\n  - 두 번째 할 일\n", text)
+        self.assertEqual(self._row()["next_steps"], before)
+
+    def test_a_note_does_not_bump_the_updated_field(self):
+        """떠오른 걸 적어둔 것은 상태 갱신이 아닙니다. 올리면 '며칠 전'이 거짓말이 됩니다."""
+        add_project_note(self.seq, "상태가 바뀐 건 아니다")
+
+        self.assertIn("updated: 2026-01-01", self._file())
+
+    def test_a_note_goes_after_the_existing_sections(self):
+        add_project_note(self.seq, "맨 뒤에 붙는다")
+
+        text = self._file()
+        self.assertLess(text.index("## 자주 쓰는 명령 / 접속"), text.index(NOTE_HEADING))
+        self.assertIn("`make run`", text)
+
+    def test_a_multi_line_note_becomes_one_bullet(self):
+        entry = add_project_note(self.seq, "첫 줄\n둘째 줄")
+
+        self.assertEqual(entry.count("\n"), 0)
+        self.assertIn("첫 줄 둘째 줄", entry)
+
+    def test_the_summary_still_parses_after_a_note_is_added(self):
+        """새 ## 절이 render.py 의 '한 줄 요약' 파싱을 흔들면 안 됩니다."""
+        add_project_note(self.seq, "절을 하나 늘린다")
+        secretary.sync(force=True)
+
+        self.assertEqual(self._row()["note"], "원래 요약입니다.")
+
+    def test_an_empty_note_is_refused(self):
+        with self.assertRaises(WriteBackError):
+            add_project_note(self.seq, "   ")
+
+    def test_a_note_on_a_manual_project_is_refused(self):
+        manual = add_project("손으로 만든 것")
+        with self.assertRaises(WriteBackError):
+            add_project_note(manual["seq"], "적을 데가 없다")
+
     # ------------------------------------------------------------ 실패
 
     def test_a_missing_file_changes_nothing(self):
@@ -327,6 +401,55 @@ class WriteBackLoopTest(unittest.TestCase):
             "SELECT COUNT(*) AS n FROM events WHERE kind = 'project.updated'"
         ).fetchone()["n"]
         self.assertEqual(rows, 1)
+
+
+@unittest.skipUnless(REAL_RENDER.is_file(), f"SECRETARY/render.py 없음: {REAL_RENDER}")
+class NoteRoutingTest(WriteBackLoopTest):
+    """shadow 모드에서 실제로 도는 것은 정규식 경로뿐입니다.
+
+    여기서 안 잡히면 문장은 잡담으로 흘러가고, Gemini가 저장했다고 말만 합니다.
+    """
+
+    def test_the_note_form_is_recognised(self):
+        parsed = parse_project_note("Alpha 아이디어 유저정보 수집")
+        self.assertIsNotNone(parsed)
+        matches, content = parsed
+        self.assertEqual([m["name"] for m in matches], ["Alpha"])
+        self.assertEqual(content, "유저정보 수집")
+
+    def test_the_note_form_does_not_require_the_word_project(self):
+        """'프로젝트'를 매번 붙이게 하면 갑자기 떠오른 걸 안 보내게 됩니다."""
+        self.assertEqual(_classify_regex_route("Alpha 아이디어 뭔가"), "project.note")
+
+    def test_a_colon_and_the_word_memo_also_work(self):
+        for text in ("Alpha 메모: 뭔가", "Alpha 아이디어: 뭔가", "Alpha 프로젝트 아이디어 뭔가"):
+            with self.subTest(text=text):
+                self.assertEqual(_classify_regex_route(text), "project.note")
+
+    def test_an_ordinary_sentence_is_not_a_project_note(self):
+        """이름이 실제 프로젝트로 풀릴 때만 인정합니다."""
+        for text in ("좋은 아이디어가 있어", "내일 회의 메모: 자료 준비", "아이디어 하나 떠올랐어"):
+            with self.subTest(text=text):
+                self.assertIsNone(parse_project_note(text))
+                self.assertNotEqual(_classify_regex_route(text), "project.note")
+
+    def test_a_note_without_content_is_not_recognised(self):
+        self.assertIsNone(parse_project_note("Alpha 아이디어"))
+
+    def test_the_reply_shows_what_actually_landed(self):
+        """'적어뒀습니다'만 돌려주면 안 적혔을 때 알 방법이 없습니다."""
+        parsed = parse_project_note("Alpha 아이디어 유저정보 수집")
+        reply = _handle_project_note(parsed, "Alpha 아이디어 유저정보 수집", "telegram")
+
+        self.assertIn("유저정보 수집", reply.text)
+        self.assertIn("유저정보 수집", self._file())
+
+    def test_a_failure_is_reported_as_a_failure(self):
+        self.status_md.unlink()
+        parsed = parse_project_note("Alpha 아이디어 사라진 파일")
+        reply = _handle_project_note(parsed, "Alpha 아이디어 사라진 파일", "telegram")
+
+        self.assertIn("적지 못했습니다", reply.text)
 
 
 if __name__ == "__main__":

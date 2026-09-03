@@ -417,3 +417,71 @@ def write_back(
         raise
     logging.info("_STATUS.md 반영 — %s (%s)", status_path, ", ".join(expected))
     return record
+
+
+# ---------------------------------------------------------------- 텔레그램 메모
+
+NOTE_HEADING = "## [텔레그램 전송]"
+
+# 이 파일을 나중에 여는 사람이나 에이전트(Claude Code, Codex)가 이 절의 성격을
+# 오해하지 않게 하는 표지입니다. 마크다운 주석이라 렌더링에는 안 보이고,
+# 원문을 읽는 쪽에는 반드시 보입니다.
+_NOTE_PREAMBLE = """<!-- 진웅이 텔레그램으로 그때그때 보낸 것.
+     코드나 git 이력에서 나온 내용이 아니라 즉흥적으로 떠오른 착상이다.
+     다듬어지지 않았고 검증도 안 됐다. 이 중 무엇을 next / blockers 로
+     올릴지는 사람이 판단한다. 여기 있다는 이유만으로 합의된 계획이 아니다.
+     Marvis(marvis/secretary.py)가 맨 아래에 덧붙이기만 한다. 지우지 않는다. -->"""
+
+
+def _append_to_note_section(body: str, entry: str) -> str:
+    """이미 있는 `## [텔레그램 전송]` 절의 맨 아래에 한 줄 붙입니다."""
+    start = body.index(NOTE_HEADING)
+    rest = body[start + len(NOTE_HEADING):]
+    boundary = re.search(r"^##\s", rest, re.M)
+    end = start + len(NOTE_HEADING) + (boundary.start() if boundary else len(rest))
+
+    section = body[start:end].rstrip("\n") + "\n" + entry
+    tail = body[end:]
+    if tail:
+        section += "\n"
+    return body[:start] + section + tail
+
+
+def append_note(status_path: str, text: str) -> str:
+    """`## [텔레그램 전송]` 절에 한 줄 덧붙이고, 그 줄을 돌려줍니다.
+
+    프론트매터는 건드리지 않고 `updated:` 도 올리지 않습니다. 떠오른 걸 적어둔
+    것은 프로젝트 상태가 갱신된 것과 다릅니다. 여기서 날짜를 올리면 대시보드의
+    "며칠 전"이 거짓말이 됩니다. 대신 항목마다 날짜를 답니다.
+
+    render.py 는 이 절을 읽지 않습니다(프론트매터와 `## 한 줄 요약`만 봅니다).
+    그래서 검증도 색인이 아니라 파일을 다시 읽어서 합니다.
+    """
+    content = " ".join(text.split())
+    if not content:
+        raise WriteBackError("빈 메모는 적지 않습니다.")
+
+    path = status_file(status_path)
+    if not path.is_file():
+        raise WriteBackError(f"_STATUS.md를 찾지 못했습니다: {path}")
+
+    original = path.read_text(encoding="utf-8")
+    match = _FRONTMATTER.match(original)
+    head, body = (original[:match.end(3)], match.group(4)) if match else ("", original)
+
+    entry = f"- {now_string()[:16]} — {content}"
+    if NOTE_HEADING in body:
+        body = _append_to_note_section(body, entry + "\n")
+    else:
+        gap = "" if body.endswith("\n\n") or not body else (
+            "\n" if body.endswith("\n") else "\n\n")
+        body = f"{body}{gap}{NOTE_HEADING}\n{_NOTE_PREAMBLE}\n{entry}\n"
+
+    updated = head + body
+    _atomic_write(path, updated)
+    if path.read_text(encoding="utf-8") != updated:
+        _atomic_write(path, original)
+        raise WriteBackError("메모를 쓴 뒤 다시 읽었더니 내용이 다릅니다.")
+
+    logging.info("_STATUS.md 메모 추가 — %s: %s", status_path, content)
+    return entry

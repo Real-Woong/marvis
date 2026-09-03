@@ -26,6 +26,7 @@ from ..projects import (
     STATUS_STOPPED,
     STATUSES,
     add_project,
+    add_project_note,
     find_projects_by_name,
     load_projects,
     update_project,
@@ -463,6 +464,56 @@ def _update_project(
         "sub_status": current["sub_status"],
         "next_steps": current["next_steps"],
     }
+
+
+@tool(
+    name="add_project_note",
+    description=(
+        "사용자가 갑자기 떠올린 착상을 그 프로젝트의 _STATUS.md 안 "
+        "'[텔레그램 전송]' 목록에 덧붙인다. 덧붙이기만 하고 아무것도 지우지 않는다. "
+        "아직 다듬어지지 않은 생각일 때 쓴다. 하기로 정해진 다음 할 일이면 "
+        "update_project 의 next_steps 를 쓴다."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "프로젝트 이름(부분 일치 가능)"},
+            "note": {"type": "string", "description": "적어 둘 내용. 사용자의 말을 그대로 옮긴다."},
+        },
+        "required": ["name", "note"],
+    },
+)
+def _add_project_note(name, note, source="telegram", **_):
+    matches = find_projects_by_name(name)
+    if not matches:
+        known = [p["name"] for p in load_projects()]
+        raise ToolError(
+            "project_not_found",
+            f"'{name}'과 일치하는 프로젝트가 없습니다.",
+            "아래 목록에서 고르도록 clarify로 물어보세요.",
+            candidates=known[:10],
+        )
+    if len(matches) > 1:
+        raise ToolError(
+            "project_ambiguous",
+            f"'{name}'에 {len(matches)}개가 걸립니다.",
+            "clarify로 어느 쪽인지 물어보세요.",
+            candidates=[p["name"] for p in matches],
+        )
+
+    project = matches[0]
+    try:
+        entry = add_project_note(project["seq"], note, source=source)
+    except WriteBackError as error:
+        raise ToolError(
+            "status_file_write_failed",
+            f"'{project['name']}'의 _STATUS.md에 적지 못했습니다.",
+            "사용자에게 그대로 알리세요. 적히지 않았습니다.",
+            detail=str(error),
+        ) from error
+
+    # 실제로 파일에 적힌 줄을 그대로 돌려줍니다.
+    return {"added": True, "name": project["name"], "entry": entry}
 
 
 @tool(

@@ -40,9 +40,11 @@ from .projects import (
     detect_project_action,
     extract_next_steps_content,
     extract_project_name,
+    add_project_note,
     find_project_by_name,
     format_all_projects,
     get_project,
+    parse_project_note,
     update_project,
 )
 from .schedule_parser import detect_message_intent
@@ -120,6 +122,29 @@ def _handle_project_action(action: str, text: str, source: str) -> Reply:
         )
 
     return Reply("요청을 이해하지 못했습니다.")
+
+
+def _handle_project_note(note: tuple, text: str, source: str) -> Reply:
+    """갑자기 떠오른 착상을 그 프로젝트의 _STATUS.md 에 적어둡니다."""
+    matches, content = note
+
+    if len(matches) > 1:
+        names = ", ".join(item["name"] for item in matches[:5])
+        _log_turn(text, source, "project.note", {"ambiguous": names})
+        return Reply(f"어느 프로젝트인지 하나로 좁혀주세요: {names}")
+
+    project = matches[0]
+    try:
+        entry = add_project_note(project["seq"], content, source=source)
+    except WriteBackError as error:
+        logging.warning("_STATUS.md 메모 실패 (%s): %s", project["name"], error)
+        _log_turn(text, source, "project.note", {"error": str(error)})
+        return Reply(f"'{project['name']}'에 적지 못했습니다. {error}")
+
+    _log_turn(text, source, "project.note", {"seq": project["seq"], "entry": entry})
+    # 무엇이 실제로 파일에 적혔는지 그대로 보여줍니다. "적어뒀습니다"라는 말만
+    # 돌려주면 안 적혔을 때 알 방법이 없습니다.
+    return Reply(f"'{project['name']}' _STATUS.md에 적었습니다.\n{entry}")
 
 
 def _log_turn(text: str, source: str, route: str, detail: dict | None = None) -> None:
@@ -245,6 +270,8 @@ def _classify_regex_route(text: str) -> str:
         return "command.schedule"
     if text == "!프로젝트":
         return "command.projects"
+    if parse_project_note(text):
+        return "project.note"
     if detect_project_action(text):
         return "project"
     return detect_message_intent(text)
@@ -252,6 +279,8 @@ def _classify_regex_route(text: str) -> str:
 
 def _routes_agree(regex_route: str, llm_tool: str | None) -> bool:
     expected = _ROUTE_TO_TOOL.get(regex_route, "__unknown__")
+    if regex_route == "project.note":
+        return llm_tool == "add_project_note"
     if regex_route == "project":
         # 프로젝트 경로는 추가/갱신 어느 쪽이어도 같은 판단으로 봅니다.
         return llm_tool in ("update_project", "add_project")
@@ -272,6 +301,11 @@ def _handle_with_regex(text: str, source: str) -> Iterator[Reply]:
     if text == "!프로젝트":
         _log_turn(text, source, "command.projects")
         yield Reply(format_all_projects(), speak=True)
+        return
+
+    note = parse_project_note(text)
+    if note:
+        yield _handle_project_note(note, text, source)
         return
 
     project_action = detect_project_action(text)

@@ -307,7 +307,8 @@ class ToolSurfaceTest(unittest.TestCase):
     def test_all_tools_have_a_schema_and_description(self):
         expected = {
             "save_memory", "list_schedule", "list_memories", "complete_item",
-            "list_projects", "add_project", "update_project", "clarify",
+            "list_projects", "add_project", "update_project", "add_project_note",
+            "clarify",
         }
         self.assertEqual(set(REGISTRY), expected)
         for name, spec in REGISTRY.items():

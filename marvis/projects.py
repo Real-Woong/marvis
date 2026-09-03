@@ -8,7 +8,12 @@ calling으로 대체할 예정이라 이번 단계에서는 그대로 두고, �
 import re
 
 from .db import get_connection, log_event, new_id, next_seq, transaction
-from .secretary import WriteBackError, sync as sync_secretary_projects, write_back
+from .secretary import (
+    WriteBackError,
+    append_note,
+    sync as sync_secretary_projects,
+    write_back,
+)
 from .time_utils import now_string
 
 STATUS_IN_PROGRESS = "진행중"
@@ -24,6 +29,7 @@ ACTION_PAUSE = "pause"
 ACTION_NEXT_STEPS = "next_steps"
 ACTION_MUTE_BRIEFING = "mute_briefing"
 ACTION_UNMUTE_BRIEFING = "unmute_briefing"
+ACTION_NOTE = "note"
 
 # status_path가 채워진 행은 SECRETARY의 _STATUS.md가 원본입니다. 무엇을 고칠 수
 # 있는지가 달라지므로 조회 결과에도 실어 보냅니다.
@@ -156,6 +162,50 @@ def detect_project_action(text: str) -> str | None:
     if "추가" in normalized and ("새로" in normalized or "시작" in normalized):
         return ACTION_ADD
     return None
+
+
+# '<프로젝트> 아이디어 <내용>' 형태. 이름이 실제 프로젝트로 풀릴 때만 인정하므로
+# "좋은 아이디어가 있어" 같은 평범한 문장은 여기 걸리지 않습니다. 이 경로는
+# '프로젝트'라는 낱말을 요구하지 않습니다. 갑자기 떠올라 던지는 말이라
+# 격식을 요구하면 쓰지 않게 됩니다.
+_NOTE_PATTERN = re.compile(
+    r"^(?P<name>[^\n]+?)\s*(?:프로젝트\s*)?(?:아이디어|메모)\s*[:：]?\s*(?P<content>.+)$",
+    re.S,
+)
+
+
+def parse_project_note(text: str) -> tuple[list[dict], str] | None:
+    """텔레그램 메모 의도라면 (프로젝트 후보들, 내용)을 돌려줍니다."""
+    match = _NOTE_PATTERN.match(text.strip())
+    if not match:
+        return None
+
+    name = match.group("name").strip(" :·-")
+    content = " ".join(match.group("content").split())
+    if not name or not content:
+        return None
+
+    matches = find_projects_by_name(name)
+    return (matches, content) if matches else None
+
+
+def add_project_note(seq: int, text: str, source: str = "telegram") -> str:
+    """프로젝트의 _STATUS.md에 텔레그램 메모 한 줄을 덧붙입니다."""
+    row = get_connection().execute(
+        "SELECT id, status_path FROM projects WHERE seq = ? AND archived = 0", (seq,)
+    ).fetchone()
+    if row is None:
+        raise WriteBackError(f"{seq}번 프로젝트를 찾지 못했습니다.")
+    if not row["status_path"]:
+        raise WriteBackError("손으로 등록한 프로젝트라 적어 둘 _STATUS.md가 없습니다.")
+
+    entry = append_note(row["status_path"], text)
+    with transaction() as tx:
+        log_event(
+            tx, "project.note_added", entity="project", entity_id=row["id"],
+            source=source, payload={"seq": seq, "entry": entry},
+        )
+    return entry
 
 
 def extract_next_steps_content(text: str) -> str | None:
