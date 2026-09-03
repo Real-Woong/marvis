@@ -11,6 +11,7 @@ from .handlers import (
     help_command,
     ideas_command,
     memory_command,
+    on_error,
     project_update_command,
     projects_command,
     schedule_command,
@@ -55,5 +56,8 @@ def main() -> None:
     app.add_handler(CommandHandler("done", done_command))
     app.add_handler(CommandHandler("forget_all_marvis", forget_all_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    # 위 핸들러들에서 새는 예외를 마지막으로 받습니다. 이게 없으면 실패가
+    # 로그에만 남고 보낸 사람에게는 침묵으로 보입니다.
+    app.add_error_handler(on_error)
     print("Marvis bot is running with memory, schedule, reminder, and optimization mode...")
     app.run_polling()

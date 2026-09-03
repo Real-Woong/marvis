@@ -3,6 +3,7 @@
 import logging
 
 from telegram import Update
+from telegram.error import NetworkError, TimedOut
 from telegram.ext import ContextTypes
 
 from .auth import owner_only
@@ -212,3 +213,45 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         logging.exception("Error while handling a Telegram message")
         await update.message.reply_text("처리하는 중 오류가 발생했습니다.")
+
+
+# 텔레그램 API가 잠깐 502나 타임아웃을 내는 것은 고장이 아닙니다.
+# python-telegram-bot이 알아서 다시 시도하고 실제로 복구됩니다. 이걸 전체
+# 트레이스백으로 남기면 진짜 고장이 그 사이에 묻힙니다.
+_TRANSIENT_ERRORS = (NetworkError, TimedOut)
+
+
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """어느 핸들러에서도 잡히지 않은 예외를 받습니다.
+
+    이 함수가 없으면 python-telegram-bot은 "No error handlers are registered"
+    한 줄과 트레이스백만 남기고 끝냅니다. 로그에는 남지만 보낸 사람에게는
+    아무 말도 가지 않습니다. 봇이 조용히 씹은 것과 구별되지 않습니다.
+
+    /projects 같은 명령 핸들러에는 각자의 try/except가 없으므로, 여기가
+    사용자에게 "안 됐다"고 알려 주는 마지막 지점입니다.
+    """
+    error = context.error
+    # 답장할 대화방이 있는지가 판단 기준입니다. 없으면 사용자 메시지를
+    # 처리하다 난 게 아니라 polling 루프 자체에서 난 오류입니다.
+    message = getattr(update, "effective_message", None)
+
+    if message is None and isinstance(error, _TRANSIENT_ERRORS):
+        logging.warning("텔레그램 통신이 잠시 끊겼습니다(재시도 중): %s", error)
+        return
+
+    logging.error("처리하지 못한 예외입니다", exc_info=error)
+
+    if message is None:
+        return
+
+    try:
+        # 무엇이 저장됐는지 확신할 수 없으므로 됐다고 말하지 않습니다.
+        await message.reply_text(
+            "처리하는 중 오류가 발생했습니다. "
+            "방금 보낸 내용은 저장되지 않았을 수 있습니다."
+        )
+    except Exception:
+        # 안내조차 못 보내면 더 할 수 있는 게 없습니다. 여기서 예외를 다시
+        # 올리면 오류 핸들러가 자기 자신을 부르게 됩니다.
+        logging.exception("오류 안내 메시지도 보내지 못했습니다")
