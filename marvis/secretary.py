@@ -13,13 +13,15 @@ _STATUS.md의 파서는 SECRETARY/render.py 하나뿐입니다. 여기서 마크
 
 import json
 import logging
+import os
+import re
 import subprocess
 import sys
 import time
 
 from .db import log_event, new_id, next_seq, transaction
 from .settings import SECRETARY_DIR
-from .time_utils import now_string
+from .time_utils import now_string, today_kst_date
 
 INDEX_FILE = SECRETARY_DIR / "_index" / "all_status.json"
 RENDER_SCRIPT = SECRETARY_DIR / "render.py"
@@ -217,3 +219,176 @@ def format_sync_result(result: dict) -> str:
         f"추가 {result['added']} · 갱신 {result['updated']} · "
         f"보관 {result['archived']} · 변화없음 {result['unchanged']}"
     )
+
+
+# ---------------------------------------------------------------- 쓰기(write-back)
+
+
+class WriteBackError(Exception):
+    """_STATUS.md를 고치지 못했습니다.
+
+    이 예외가 나면 DB도 건드리면 안 됩니다. 원본은 파일이므로 파일에 없는 값이
+    DB에 남으면 다음 동기화에서 조용히 되돌아갑니다. 사용자에게는 저장된 것처럼
+    보이는데 실제로는 사라지는 것이 가장 나쁩니다.
+    """
+
+
+# 되돌리기가 완전하지 않습니다. Marvis의 '중단'은 SECRETARY의 관찰중/멈춤/종료가
+# 합쳐진 것이라 어느 쪽인지 알 수 없습니다. sub_status가 SECRETARY의 상태 이름일
+# 때만 그걸 쓰고, 아니면(Marvis 고유 태그거나 비어 있으면) '멈춤'으로 적습니다.
+_SECRETARY_STATES = ("진행중", "관찰중", "멈춤", "종료")
+
+# render.py의 프론트매터 경계와 같은 규칙입니다. 여기서는 의미를 읽는 게 아니라
+# 고칠 자리를 찾는 것뿐입니다. 파싱은 계속 render.py 하나만 합니다.
+_FRONTMATTER = re.compile(r"^(---\n)(.*?\n)(---\n?)(.*)$", re.S)
+
+_SUMMARY_HEADING = "## 한 줄 요약"
+
+
+def status_file(status_path: str) -> "os.PathLike":
+    """status_path(색인의 상대 경로)에 해당하는 _STATUS.md 경로.
+
+    render.py의 ROOT = SCRIPT_DIR.parent와 같은 규칙입니다. 둘이 어긋나면 파일을
+    못 찾아 write_back이 실패하므로, 조용히 엉뚱한 파일을 고치지는 않습니다.
+    """
+    return SECRETARY_DIR.parent / status_path / "_STATUS.md"
+
+
+def _to_secretary_status(status: str, sub_status: str | None) -> str:
+    if status == "진행중":
+        return "진행중"
+    if sub_status in _SECRETARY_STATES:
+        return sub_status
+    return "멈춤"
+
+
+def _set_scalar(frontmatter: str, key: str, value: str) -> str:
+    """`key: value` 한 줄을 바꿉니다. 뒤에 붙은 주석은 그대로 둡니다."""
+    pattern = re.compile(rf"^({key}:)([^\n#]*)(#[^\n]*)?$", re.M)
+
+    def replace(match: re.Match) -> str:
+        old, comment = match.group(2), match.group(3) or ""
+        new = f" {value}"
+        if comment:
+            # 주석 위치가 흔들리면 사람이 보는 diff가 지저분해집니다.
+            new = new.ljust(len(old))
+        return match.group(1) + new + comment
+
+    if pattern.search(frontmatter):
+        return pattern.sub(replace, frontmatter, count=1)
+    return frontmatter + f"{key}: {value}\n"
+
+
+def _set_list(frontmatter: str, key: str, items: list[str]) -> str:
+    """`key:` 아래의 `  - ` 항목들을 통째로 갈아끼웁니다."""
+    block = f"{key}:\n" + "".join(f"  - {item}\n" for item in items)
+    # render.py의 항목 규칙(^\s+-)과 같은 모양만 먹습니다.
+    pattern = re.compile(rf"^{key}:[^\n]*\n(?:[ \t]+-[^\n]*\n)*", re.M)
+    if pattern.search(frontmatter):
+        return pattern.sub(lambda _: block, frontmatter, count=1)
+    return frontmatter + block
+
+
+def _set_summary(body: str, text: str) -> str:
+    """본문 `## 한 줄 요약` 아래 문단을 바꿉니다. 다른 절은 건드리지 않습니다."""
+    pattern = re.compile(r"^(##\s*한 줄 요약\s*\n)(.*?)(?=\n##|\Z)", re.S | re.M)
+    if pattern.search(body):
+        return pattern.sub(lambda m: m.group(1) + text + "\n", body, count=1)
+    return f"{_SUMMARY_HEADING}\n{text}\n\n{body}"
+
+
+def _atomic_write(path, text: str) -> None:
+    """같은 디렉터리에 임시 파일로 쓴 뒤 바꿔치기합니다.
+
+    중간에 죽어도 반쯤 쓰다 만 _STATUS.md는 남지 않습니다.
+    """
+    tmp = path.with_name(path.name + ".marvis-tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _verify(status_path: str, expected: dict) -> dict:
+    """색인을 다시 만들고, 단일 파서가 실제로 무엇을 읽었는지 확인합니다.
+
+    우리가 텍스트를 고친 것과 render.py가 읽는 것이 같다는 보장은 이 확인뿐입니다.
+    """
+    if not refresh_index(force=True):
+        raise WriteBackError("색인을 다시 만들지 못해 반영을 확인할 수 없습니다.")
+
+    index = load_index(refresh=False)
+    if index is None:
+        raise WriteBackError("색인을 읽지 못해 반영을 확인할 수 없습니다.")
+
+    for record in index["projects"]:
+        if record.get("path") == status_path:
+            break
+    else:
+        raise WriteBackError(f"고친 뒤 색인에서 사라졌습니다: {status_path}")
+
+    mismatched = [
+        f"{key}: 쓴 값 {value!r} → 읽힌 값 {record.get(key)!r}"
+        for key, value in expected.items()
+        if record.get(key) != value
+    ]
+    if mismatched:
+        raise WriteBackError("고친 내용이 그대로 읽히지 않았습니다 — " + " · ".join(mismatched))
+    return record
+
+
+def write_back(
+    status_path: str,
+    *,
+    status: str | None = None,
+    sub_status: str | None = None,
+    next_steps: str | None = None,
+    blockers: list[str] | None = None,
+    note: str | None = None,
+) -> dict:
+    """_STATUS.md를 고치고, 다시 읽어 확인한 뒤, 색인 레코드를 돌려줍니다.
+
+    확인에 실패하면 파일을 원래대로 되돌리고 WriteBackError를 올립니다.
+    """
+    path = status_file(status_path)
+    if not path.is_file():
+        raise WriteBackError(f"_STATUS.md를 찾지 못했습니다: {path}")
+
+    original = path.read_text(encoding="utf-8")
+    match = _FRONTMATTER.match(original)
+    if match is None:
+        raise WriteBackError(f"프론트매터가 없어 안전하게 고칠 수 없습니다: {path}")
+
+    opening, frontmatter, closing, body = match.groups()
+    expected: dict = {}
+
+    if status is not None:
+        secretary_status = _to_secretary_status(status, sub_status)
+        frontmatter = _set_scalar(frontmatter, "status", secretary_status)
+        expected["status"] = secretary_status
+    if next_steps is not None:
+        items = [next_steps.strip()] if next_steps.strip() else []
+        frontmatter = _set_list(frontmatter, "next", items)
+        expected["next"] = items
+    if blockers is not None:
+        items = [item.strip() for item in blockers if item.strip()]
+        frontmatter = _set_list(frontmatter, "blockers", items)
+        expected["blockers"] = items
+    if note is not None:
+        # render.py는 요약을 공백 정리해서 읽으므로 확인도 같은 모양으로 합니다.
+        summary = " ".join(note.split())
+        body = _set_summary(body, summary)
+        expected["summary"] = summary
+
+    if not expected:
+        return _verify(status_path, {})
+
+    # 사람이 손으로 고쳤을 때 하는 것과 같습니다.
+    frontmatter = _set_scalar(frontmatter, "updated", today_kst_date().isoformat())
+
+    _atomic_write(path, opening + frontmatter + closing + body)
+    try:
+        record = _verify(status_path, expected)
+    except WriteBackError:
+        _atomic_write(path, original)
+        raise
+    logging.info("_STATUS.md 반영 — %s (%s)", status_path, ", ".join(expected))
+    return record

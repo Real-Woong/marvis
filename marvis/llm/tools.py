@@ -30,7 +30,7 @@ from ..projects import (
     load_projects,
     update_project,
 )
-from ..secretary import sync as sync_secretary_projects
+from ..secretary import WriteBackError, sync as sync_secretary_projects
 from ..settings import KST
 from ..time_utils import now_kst, today_kst_date
 
@@ -370,7 +370,9 @@ def _add_project(name, source="telegram", **_):
     name="update_project",
     description=(
         "프로젝트의 상태나 다음 할 일을 갱신한다. 이름이 여러 프로젝트에 걸리면 "
-        "오류가 돌아오므로, 그때는 clarify로 사용자에게 물어본다."
+        "오류가 돌아오므로, 그때는 clarify로 사용자에게 물어본다. "
+        "대부분의 프로젝트는 SECRETARY의 _STATUS.md가 원본이라 이 도구가 그 파일을 "
+        "직접 고친다. 되돌리기 어려우니 사용자가 실제로 요청한 것만 담아 부른다."
     ),
     parameters={
         "type": "object",
@@ -378,15 +380,23 @@ def _add_project(name, source="telegram", **_):
             "name": {"type": "string", "description": "프로젝트 이름(부분 일치 가능)"},
             "status": {"type": "string", "enum": list(STATUSES)},
             "sub_status": {"type": "string", "description": "중단 사유 태그. 예: 일시정지"},
-            "next_steps": {"type": "string"},
-            "note": {"type": "string"},
+            "next_steps": {"type": "string", "description": "다음 할 일 한 줄. 기존 목록을 대체한다."},
+            "note": {"type": "string", "description": "한 줄 요약"},
+            "blockers": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "막고 있는 것 목록. 기존 목록을 대체하므로, 다 풀렸으면 빈 배열을 준다. "
+                    "브리핑은 막힌 게 있으면 다음 할 일 대신 그것부터 읽는다."
+                ),
+            },
             "muted_from_briefing": {"type": "boolean", "description": "아침 브리핑 제외 여부"},
         },
         "required": ["name"],
     },
 )
 def _update_project(
-    name, status=None, sub_status=None, next_steps=None, note=None,
+    name, status=None, sub_status=None, next_steps=None, note=None, blockers=None,
     muted_from_briefing=None, source="telegram", **_,
 ):
     matches = find_projects_by_name(name)
@@ -410,16 +420,43 @@ def _update_project(
     if status == STATUS_STOPPED and sub_status is None:
         sub_status = None  # 태그 없이 중단만 표시하는 것도 허용합니다.
 
-    update_project(
-        project["seq"],
-        status=status,
-        sub_status=sub_status,
-        next_steps=next_steps,
-        note=note,
-        muted_from_briefing=muted_from_briefing,
-        source=source,
-    )
-    return {"updated": True, "name": project["name"]}
+    if blockers is not None and not project["status_path"]:
+        raise ToolError(
+            "not_a_status_file_project",
+            f"'{project['name']}'은 손으로 등록한 프로젝트라 막힌 것을 적을 곳이 없습니다.",
+            "blockers 없이 next_steps나 note로 다시 시도하세요.",
+        )
+
+    try:
+        update_project(
+            project["seq"],
+            status=status,
+            sub_status=sub_status,
+            next_steps=next_steps,
+            note=note,
+            blockers=blockers,
+            muted_from_briefing=muted_from_briefing,
+            source=source,
+        )
+    except WriteBackError as error:
+        # 파일을 못 고쳤으면 DB도 안 바뀌었습니다. 저장된 척하면 안 됩니다.
+        raise ToolError(
+            "status_file_write_failed",
+            f"'{project['name']}'의 _STATUS.md를 고치지 못해 아무것도 저장하지 않았습니다.",
+            "사용자에게 그대로 알리고, 파일을 직접 확인하도록 안내하세요.",
+            detail=str(error),
+        ) from error
+
+    # 파일에서 다시 읽힌 값을 돌려줍니다. 우리가 보낸 값이 아니라 실제로 남은 값입니다.
+    saved = find_projects_by_name(project["name"])
+    current = saved[0] if saved else project
+    return {
+        "updated": True,
+        "name": current["name"],
+        "status": current["status"],
+        "sub_status": current["sub_status"],
+        "next_steps": current["next_steps"],
+    }
 
 
 @tool(

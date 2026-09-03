@@ -8,6 +8,7 @@ calling으로 대체할 예정이라 이번 단계에서는 그대로 두고, �
 import re
 
 from .db import get_connection, log_event, new_id, next_seq, transaction
+from .secretary import WriteBackError, sync as sync_secretary_projects, write_back
 from .time_utils import now_string
 
 STATUS_IN_PROGRESS = "진행중"
@@ -24,9 +25,11 @@ ACTION_NEXT_STEPS = "next_steps"
 ACTION_MUTE_BRIEFING = "mute_briefing"
 ACTION_UNMUTE_BRIEFING = "unmute_briefing"
 
+# status_path가 채워진 행은 SECRETARY의 _STATUS.md가 원본입니다. 무엇을 고칠 수
+# 있는지가 달라지므로 조회 결과에도 실어 보냅니다.
 _COLUMNS = (
     "id, seq, name, status, sub_status, next_steps, note, muted_from_briefing,"
-    " archived, created_at, updated_at"
+    " archived, status_path, created_at, updated_at"
 )
 
 # '프로젝트'와 붙어 있는 단어를 이름으로 오인하지 않도록 걸러내는 동작어입니다.
@@ -248,6 +251,8 @@ def add_project(
         "note": note,
         "muted_from_briefing": 0,
         "archived": 0,
+        # 손으로 추가한 프로젝트에는 대응하는 _STATUS.md가 없습니다.
+        "status_path": None,
         "created_at": created_at,
         "updated_at": created_at,
     }
@@ -259,57 +264,86 @@ def update_project(
     sub_status: str | None = None,
     next_steps: str | None = None,
     note: str | None = None,
+    blockers: list[str] | None = None,
     muted_from_briefing: bool | None = None,
     source: str = "telegram",
 ) -> bool:
-    """번호(seq)로 프로젝트를 찾아 전달된 필드만 갱신합니다."""
-    assignments: list[str] = []
-    values: list = []
-    changes: dict = {}
+    """번호(seq)로 프로젝트를 찾아 전달된 필드만 갱신합니다.
 
-    if status is not None:
-        assignments.append("status = ?")
-        values.append(status)
-        changes["status"] = status
-        # 다시 진행중으로 바뀌면 중단 사유 태그는 의미가 없어집니다.
-        if status == STATUS_IN_PROGRESS:
-            assignments.append("sub_status = NULL")
-            changes["sub_status"] = None
-    if sub_status is not None:
-        assignments.append("sub_status = ?")
-        values.append(sub_status)
-        changes["sub_status"] = sub_status
-    if next_steps is not None:
-        assignments.append("next_steps = ?")
-        values.append(next_steps)
-        changes["next_steps"] = next_steps
-    if note is not None:
-        assignments.append("note = ?")
-        values.append(note)
-        changes["note"] = note
+    SECRETARY가 원본인 프로젝트(status_path가 있는 행)는 DB를 직접 고치지 않고
+    _STATUS.md를 고친 뒤 그 파일에서 다시 읽어옵니다. DB만 고치면 다음 동기화가
+    파일 내용으로 덮어써서 방금 한 수정이 조용히 사라지기 때문입니다.
+    파일을 고치지 못하면 WriteBackError를 올리고 DB는 건드리지 않습니다.
+
+    muted_from_briefing은 SECRETARY가 모르는 Marvis 쪽 취향이라 어느 경우든
+    DB에만 남습니다. blockers는 _STATUS.md에만 있는 항목이라 손으로 추가한
+    프로젝트에서는 무시됩니다.
+    """
+    row = get_connection().execute(
+        "SELECT id, status_path, sub_status FROM projects WHERE seq = ? AND archived = 0",
+        (seq,),
+    ).fetchone()
+    if row is None:
+        return False
+
+    changes: dict = {}
+    file_fields = {
+        "status": status, "sub_status": sub_status, "next_steps": next_steps,
+        "note": note, "blockers": blockers,
+    }
+
+    if row["status_path"] and any(value is not None for value in file_fields.values()):
+        write_back(
+            row["status_path"],
+            status=status,
+            # '중단'만으로는 관찰중/멈춤/종료 중 무엇인지 알 수 없습니다. 이번에
+            # 따로 주지 않았다면 지금 값을 그대로 유지합니다.
+            sub_status=sub_status if sub_status is not None else row["sub_status"],
+            next_steps=next_steps,
+            blockers=blockers,
+            note=note,
+        )
+        # 원본은 파일입니다. 방금 쓴 내용을 파일에서 다시 읽어 DB를 맞춥니다.
+        # write_back이 이미 색인을 새로 만들었으므로 render.py를 또 돌리지 않습니다.
+        sync_secretary_projects(refresh=False)
+        changes = {k: v for k, v in file_fields.items() if v is not None}
+
+    db_fields: dict = {}
     if muted_from_briefing is not None:
-        assignments.append("muted_from_briefing = ?")
-        values.append(1 if muted_from_briefing else 0)
+        db_fields["muted_from_briefing"] = 1 if muted_from_briefing else 0
         changes["muted_from_briefing"] = bool(muted_from_briefing)
 
-    if not assignments:
-        return get_project(seq) is not None
+    if not row["status_path"]:
+        # 손으로 추가한 프로젝트는 DB가 원본입니다. 예전 동작 그대로입니다.
+        if status is not None:
+            db_fields["status"] = status
+            changes["status"] = status
+            # 다시 진행중으로 바뀌면 중단 사유 태그는 의미가 없어집니다.
+            if status == STATUS_IN_PROGRESS:
+                db_fields["sub_status"] = None
+                changes["sub_status"] = None
+        if sub_status is not None:
+            db_fields["sub_status"] = sub_status
+            changes["sub_status"] = sub_status
+        if next_steps is not None:
+            db_fields["next_steps"] = next_steps
+            changes["next_steps"] = next_steps
+        if note is not None:
+            db_fields["note"] = note
+            changes["note"] = note
 
-    assignments.append("updated_at = ?")
-    values.append(now_string())
+    if not changes:
+        return True
 
     with transaction() as tx:
-        row = tx.execute(
-            "SELECT id FROM projects WHERE seq = ? AND archived = 0", (seq,)
-        ).fetchone()
-        if row is None:
-            return False
-        tx.execute(
-            f"UPDATE projects SET {', '.join(assignments)} WHERE id = ?",
-            (*values, row["id"]),
-        )
+        if db_fields:
+            assignments = ", ".join(f"{column} = ?" for column in db_fields)
+            tx.execute(
+                f"UPDATE projects SET {assignments}, updated_at = ? WHERE id = ?",
+                (*db_fields.values(), now_string(), row["id"]),
+            )
         log_event(
             tx, "project.updated", entity="project", entity_id=row["id"], source=source,
             payload={"seq": seq, "changes": changes},
         )
-        return True
+    return True

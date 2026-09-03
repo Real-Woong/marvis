@@ -42,9 +42,11 @@ from .projects import (
     extract_project_name,
     find_project_by_name,
     format_all_projects,
+    get_project,
     update_project,
 )
 from .schedule_parser import detect_message_intent
+from .secretary import WriteBackError
 from .settings import ROUTER_MODE
 
 ROUTER_REGEX = "regex"
@@ -86,24 +88,36 @@ def _handle_project_action(action: str, text: str, source: str) -> Reply:
         return Reply(f"'{project_name}'과 일치하는 프로젝트를 찾지 못했습니다.")
 
     seq = project["seq"]
-    if action == ACTION_STOP:
-        update_project(seq, status=STATUS_STOPPED, source=source)
-        return Reply(f"'{project['name']}' 프로젝트를 중단 상태로 변경했습니다.")
-    if action == ACTION_PAUSE:
-        update_project(seq, status=STATUS_STOPPED, sub_status="일시정지", source=source)
-        return Reply(f"'{project['name']}' 프로젝트를 일시정지로 변경했습니다.")
-    if action == ACTION_NEXT_STEPS:
-        content = extract_next_steps_content(text)
-        if not content:
-            return Reply("다음 할 일 내용을 인식하지 못했습니다.")
-        update_project(seq, next_steps=content, source=source)
-        return Reply(f"'{project['name']}'의 다음 할 일을 갱신했습니다: {content}")
-    if action == ACTION_MUTE_BRIEFING:
-        update_project(seq, muted_from_briefing=True, source=source)
-        return Reply(f"'{project['name']}'을(를) 아침 브리핑에서 제외했습니다.")
-    if action == ACTION_UNMUTE_BRIEFING:
-        update_project(seq, muted_from_briefing=False, source=source)
-        return Reply(f"'{project['name']}'을(를) 아침 브리핑에 다시 포함했습니다.")
+    try:
+        if action == ACTION_STOP:
+            update_project(seq, status=STATUS_STOPPED, source=source)
+            return Reply(f"'{project['name']}' 프로젝트를 중단 상태로 변경했습니다.")
+        if action == ACTION_PAUSE:
+            update_project(seq, status=STATUS_STOPPED, sub_status="일시정지", source=source)
+            # SECRETARY가 원본인 프로젝트는 '일시정지'라는 태그가 없어 '멈춤'으로
+            # 적힙니다. 요청한 말이 아니라 실제로 남은 값을 알려줍니다.
+            current = get_project(seq) or project
+            landed = current.get("sub_status") or "중단"
+            return Reply(f"'{project['name']}' 프로젝트를 {landed}(으)로 변경했습니다.")
+        if action == ACTION_NEXT_STEPS:
+            content = extract_next_steps_content(text)
+            if not content:
+                return Reply("다음 할 일 내용을 인식하지 못했습니다.")
+            update_project(seq, next_steps=content, source=source)
+            return Reply(f"'{project['name']}'의 다음 할 일을 갱신했습니다: {content}")
+        if action == ACTION_MUTE_BRIEFING:
+            update_project(seq, muted_from_briefing=True, source=source)
+            return Reply(f"'{project['name']}'을(를) 아침 브리핑에서 제외했습니다.")
+        if action == ACTION_UNMUTE_BRIEFING:
+            update_project(seq, muted_from_briefing=False, source=source)
+            return Reply(f"'{project['name']}'을(를) 아침 브리핑에 다시 포함했습니다.")
+    except WriteBackError as error:
+        # 파일이 원본이라, 파일을 못 고쳤으면 아무것도 바뀌지 않았습니다.
+        logging.warning("_STATUS.md 반영 실패 (%s): %s", project["name"], error)
+        return Reply(
+            f"'{project['name']}'의 _STATUS.md를 고치지 못해 아무것도 바꾸지 못했습니다. "
+            f"파일을 직접 확인해주세요."
+        )
 
     return Reply("요청을 이해하지 못했습니다.")
 

@@ -22,6 +22,7 @@ from .projects import (
     format_all_projects,
     update_project,
 )
+from .secretary import WriteBackError
 from .settings import MAX_IDEA_CONTEXT_ITEMS
 from .storage import save_chat_id
 from .voice import send_text_and_voice
@@ -149,10 +150,19 @@ async def project_update_command(update: Update, context: ContextTypes.DEFAULT_T
         rest = rest[1:]
     content = " ".join(rest) if rest else None
 
-    if status == STATUS_STOPPED:
-        updated = update_project(project_seq, status=status, sub_status=sub_status, note=content)
-    else:
-        updated = update_project(project_seq, status=status, next_steps=content)
+    try:
+        if status == STATUS_STOPPED:
+            updated = update_project(
+                project_seq, status=status, sub_status=sub_status, note=content)
+        else:
+            updated = update_project(project_seq, status=status, next_steps=content)
+    except WriteBackError as error:
+        # SECRETARY가 원본인 프로젝트입니다. 파일을 못 고쳤으면 DB도 안 바뀌었습니다.
+        await update.message.reply_text(
+            f"{project_seq}번 프로젝트의 _STATUS.md를 고치지 못해 "
+            f"아무것도 저장하지 않았습니다.\n{error}"
+        )
+        return
 
     if updated:
         await update.message.reply_text(f"{project_seq}번 프로젝트를 갱신했습니다.")
