@@ -9,6 +9,7 @@ from .llm.factory import get_client
 from .memory import (
     archive_past_schedules,
     format_memories,
+    format_recurrences_raw,
     format_schedule_by_date,
     get_ideas,
     get_recent_memories,
@@ -24,6 +25,7 @@ def ask_gemini(user_text: str) -> str:
     # 지난 일정이 AI 문맥에 포함되지 않도록 요청 직전에 보관 처리합니다.
     archive_past_schedules()
     active_schedules = format_schedule_by_date()
+    recurrences = format_recurrences_raw()
     recent_memories = format_memories(get_recent_memories(limit=MAX_RECENT_CONTEXT_ITEMS))
     ideas = format_memories(get_ideas()[-MAX_IDEA_CONTEXT_ITEMS:])
     sync_secretary_projects()
@@ -46,6 +48,25 @@ Marvis의 핵심 역할:
 - 지난 날짜의 스케쥴은 자동 정리된 상태라고 가정한다.
 - 알림 시간이 있는 스케쥴은 시간이 되면 Marvis가 먼저 텔레그램으로 알림을 보낸다.
 - 답변에서 알림을 보냈다고 거짓말하지 않는다.
+
+**이 대화에서 너는 아무것도 저장·수정·삭제할 수 없다.**
+지금 너에게는 도구가 하나도 없다. 아래 목록을 읽고 말하는 것이 네가 할 수 있는
+전부다. 그러므로:
+- "저장했습니다", "삭제했습니다", "수정했습니다", "등록했습니다",
+  "업데이트했습니다"라고 절대 쓰지 않는다. 하지 않았기 때문이다.
+- 사용자가 고치거나 지워 달라고 하면, 한 것처럼 답하지 말고 방법을 알려준다.
+  지우기는 "[번호] 지워줘", 완료는 "/done 번호", 저장된 원본 확인은 "!원본",
+  반복 규칙 확인은 "!반복" 이다.
+- 아래 목록에 없는 것은 존재하지 않는다. 없는 일정이나 규칙을 지어내지 않고,
+  "그런 항목은 저장돼 있지 않습니다"라고 말한다.
+- 미래형으로 없는 동작을 서술하지 않는다. "11월 2일부터 06:10으로 자동
+  변경될 예정입니다" 같은 문장은, 그 규칙이 아래 목록에 그대로 있을 때만 쓴다.
+- 목록에 있는 레코드의 종류를 바꿔 부르지 않는다. 단발 일정 한 건을
+  "반복 알림 규칙"이라고 렌더링하지 않는다. 반복은 아래 '반복 규칙' 절에
+  있는 것만이 반복이다.
+
+저장된 반복 규칙(이 목록에 없으면 반복 알림은 없는 것이다):
+{recurrences}
 
 현재 날짜별 스케쥴:
 {active_schedules}

@@ -19,7 +19,7 @@ from contextlib import contextmanager
 from .settings import DB_FILE
 from .time_utils import now_string
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # 스레드마다 별도 연결을 씁니다. 텔레그램 핸들러, 알림 루프, 웹훅 서버가
 # 각각 다른 스레드에서 동시에 접근합니다.
@@ -73,6 +73,34 @@ CREATE TABLE IF NOT EXISTS projects (
 );
 
 CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(archived, status);
+
+-- 반복 일정. items 와 달리 한 줄이 여러 번의 알림을 뜻합니다.
+--
+-- 예전에는 반복을 표현할 곳이 없어서, 반복 요청이 들어오면 (a) 원문이 단발
+-- 하나로 저장되거나 (b) LLM 이 수십 건의 단발로 펼쳐 놓았습니다. 둘 다
+-- "월~금 06:10" 이라는 사용자의 규칙 자체를 잃어버려서, 나중에 시각을
+-- 바꾸려면 펼쳐진 것을 전부 찾아 고쳐야 했습니다. 규칙을 규칙으로 저장하면
+-- 고칠 곳이 한 곳입니다.
+CREATE TABLE IF NOT EXISTS recurrences (
+    id            TEXT PRIMARY KEY,
+    seq           INTEGER NOT NULL UNIQUE,
+    content       TEXT NOT NULL,
+    -- 월=0 … 일=6. 쉼표로 이은 오름차순 문자열입니다. 예: '0,1,2,3,4'
+    weekdays      TEXT NOT NULL,
+    at_time       TEXT NOT NULL,   -- 'HH:MM'
+    starts_on     TEXT NOT NULL,   -- YYYY-MM-DD
+    ends_on       TEXT,            -- YYYY-MM-DD. NULL 이면 종료일 없음
+    timezone      TEXT NOT NULL DEFAULT 'Asia/Seoul',
+    -- 마지막으로 실제 발송한 날(YYYY-MM-DD). 하루 한 번만 울리게 하는 자물쇠입니다.
+    last_fired_on TEXT,
+    archived      INTEGER NOT NULL DEFAULT 0,
+    archived_at   TEXT,
+    source        TEXT NOT NULL DEFAULT 'telegram',
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_recurrences_active ON recurrences(archived, starts_on);
 
 -- 추가 전용. 수정도 삭제도 하지 않습니다.
 CREATE TABLE IF NOT EXISTS events (
@@ -136,7 +164,7 @@ def transaction():
 
 def next_seq(conn: sqlite3.Connection, table: str) -> int:
     """사용자에게 보여줄 다음 번호. 삭제된 번호를 재사용하지 않습니다."""
-    if table not in ("items", "projects"):
+    if table not in ("items", "projects", "recurrences"):
         raise ValueError(f"unknown table: {table}")
     row = conn.execute(f"SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM {table}").fetchone()
     return int(row["next"])
@@ -184,6 +212,13 @@ _MIGRATIONS: dict[int, list[str]] = {
     2: [
         "ALTER TABLE projects ADD COLUMN status_path TEXT",
         "ALTER TABLE projects ADD COLUMN source TEXT NOT NULL DEFAULT 'telegram'",
+    ],
+    # recurrences 테이블 자체는 init_db 가 _SCHEMA 를 먼저 실행하면서 이미
+    # 만들어 둡니다(CREATE TABLE IF NOT EXISTS). 여기서는 버전만 올립니다.
+    # 인덱스를 한 번 더 보장해 두는 것은 값이 싸고, 순서를 헷갈리지 않게 합니다.
+    3: [
+        "CREATE INDEX IF NOT EXISTS idx_recurrences_active"
+        " ON recurrences(archived, starts_on)",
     ],
 }
 

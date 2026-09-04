@@ -26,7 +26,7 @@ from .projects import (
 from .secretary import WriteBackError
 from .settings import MAX_IDEA_CONTEXT_ITEMS
 from .storage import save_chat_id
-from .voice import send_text_and_voice
+from .voice import send_long_text, send_text_and_voice
 
 
 @owner_only
@@ -47,8 +47,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "- 프로젝트OO 중단으로 수정해줘\n"
         "- 프로젝트OO 다음할일은 배포 확인이야\n"
         "- 프로젝트OO 잠깐 멈출게\n\n"
+        "반복 알림:\n"
+        "- 평일 06:10 보고서 확인 반복 알림\n"
+        "- 월수금 20시 운동 반복, 2026-12-31까지\n\n"
+        "고치기/지우기:\n"
+        "- [12] 지워줘   (번호는 !원본 에서 확인)\n"
+        "- /done 12      (완료 표시)\n\n"
         "명령어:\n"
         "!스케쥴 - 날짜별 스케쥴 확인\n"
+        "!원본 - 저장된 레코드를 각색 없이 그대로 확인\n"
+        "!반복 - 저장된 반복 규칙 확인\n"
         "/memory - 최근 기억 확인\n"
         "/schedule - 저장된 일정/할 일 확인\n"
         "/ideas - 저장된 아이디어 확인\n"
@@ -71,6 +79,17 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "예: 오늘 오후 8시에 운동하라고 알려줘\n"
         "예: 30분 뒤 물 마시라고 알려줘\n\n"
         "3. 날짜별 스케쥴 확인\n!스케쥴 또는 /schedule\n\n"
+        "3-1. 반복 알림\n"
+        "예: 평일 06:10 보고서 확인 반복 알림\n"
+        "예: 월수금 20시 운동 반복, 2026-12-31까지\n"
+        "저장된 규칙 확인: !반복\n\n"
+        "3-2. 저장된 원본 그대로 보기\n"
+        "!원본 - 요약이 아니라 레코드 필드(번호·종류·시각·기간)를 그대로 보여줍니다.\n"
+        "요약이 원본과 다르면 그건 버그이니 알려주세요.\n\n"
+        "3-3. 지우기\n"
+        "예: [12] 지워줘\n"
+        "번호는 !원본 에서 확인합니다. 저장된 내용의 본문을 그 자리에서 고치는 "
+        "기능은 아직 없습니다.\n\n"
         "4. 저장된 아이디어 확인\n/ideas\n\n"
         "5. 최근 기억 확인\n/memory\n\n"
         "6. 완료 처리\n/done 1\n\n"
@@ -83,7 +102,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "예: 프로젝트OO 다음할일은 배포 확인이야\n"
         "예: 프로젝트OO 잠깐 멈출게\n"
         "또는 /project_update 1 진행중 다음 할 일 내용\n\n"
-        "주의: 일반 메시지도 기억에 저장되며, 지난 날짜의 스케쥴은 조회에서 자동으로 빠집니다."
+        "주의: 일반 메시지도 기억에 저장되며, 지난 날짜의 스케쥴은 조회에서 자동으로 빠집니다.\n"
+        "여러 일정이 섞인 긴 메시지는 통째로 저장하지 않고 되묻습니다. "
+        "한 건씩 보내주세요."
     )
     await update.message.reply_text(message)
 
@@ -94,7 +115,7 @@ async def memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_chat_id(update.effective_chat.id)
     text = "최근 저장된 기억입니다:\n\n" + format_memories(get_recent_memories(limit=20))
     # 목록은 음성으로 들을 수 없는 길이라 텍스트로만 보냅니다.
-    await update.message.reply_text(text)
+    await send_long_text(update, text)
 
 
 @owner_only
@@ -109,7 +130,7 @@ async def ideas_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """최근 아이디어를 보여줍니다."""
     save_chat_id(update.effective_chat.id)
     ideas = get_ideas()[-MAX_IDEA_CONTEXT_ITEMS:]
-    await update.message.reply_text("최근 저장된 아이디어입니다:\n\n" + format_memories(ideas))
+    await send_long_text(update, "최근 저장된 아이디어입니다:\n\n" + format_memories(ideas))
 
 
 @owner_only
@@ -209,7 +230,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if reply.speak:
                 await send_text_and_voice(update, reply.text)
             else:
-                await update.message.reply_text(reply.text)
+                # 원본 목록은 길어질 수 있습니다. reply_text 로 그냥 보내면
+                # 4096자를 넘는 순간 전송이 실패하고, 사용자에게는 답변 대신
+                # 오류 안내만 갑니다.
+                await send_long_text(update, reply.text)
     except Exception:
         logging.exception("Error while handling a Telegram message")
         await update.message.reply_text("처리하는 중 오류가 발생했습니다.")

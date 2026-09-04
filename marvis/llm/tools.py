@@ -17,9 +17,17 @@ from typing import Any, Callable
 from ..memory import (
     counts_summary,
     create_item,
+    create_recurrence,
+    delete_item,
+    delete_recurrence,
+    format_weekdays,
+    get_item,
     get_schedules_between,
+    list_recurrences,
     mark_done,
+    parse_weekdays,
     search_memories,
+    update_recurrence,
 )
 from ..projects import (
     STATUS_IN_PROGRESS,
@@ -64,11 +72,16 @@ class ToolError(Exception):
 
 
 class ToolSpec:
-    def __init__(self, name: str, description: str, parameters: dict, handler: Callable):
+    def __init__(
+        self, name: str, description: str, parameters: dict, handler: Callable,
+        writes: bool = False,
+    ):
         self.name = name
         self.description = description
         self.parameters = parameters
         self.handler = handler
+        # 이 도구가 상태를 바꾸는가. shadow(관찰 전용) 실행에서 걸러낼 기준입니다.
+        self.writes = writes
 
     def schema(self) -> dict:
         return {
@@ -81,9 +94,9 @@ class ToolSpec:
 REGISTRY: dict[str, ToolSpec] = {}
 
 
-def tool(name: str, description: str, parameters: dict):
+def tool(name: str, description: str, parameters: dict, writes: bool = False):
     def decorator(handler: Callable) -> Callable:
-        REGISTRY[name] = ToolSpec(name, description, parameters, handler)
+        REGISTRY[name] = ToolSpec(name, description, parameters, handler, writes=writes)
         return handler
 
     return decorator
@@ -162,12 +175,23 @@ def _validate_against_schema(spec: ToolSpec, args: dict) -> dict:
     description=(
         "사용자가 기억해 두길 원하는 내용을 저장한다. 일정·할 일이면 kind='schedule'과 "
         "schedule_date를, 특정 시각에 알림이 필요하면 reminder_at까지 넣는다. "
-        "아이디어면 'idea', 그 외 메모는 'note'. 날짜와 시각은 반드시 절대값으로 계산해서 넣는다."
+        "아이디어면 'idea', 그 외 메모는 'note'. 날짜와 시각은 반드시 절대값으로 계산해서 넣는다. "
+        "반복되는 일정(매일·평일·매주)은 이 도구로 여러 건 펼쳐 넣지 말고 "
+        "save_recurring_schedule을 쓴다."
     ),
     parameters={
         "type": "object",
         "properties": {
-            "content": {"type": "string", "description": "저장할 내용. 사용자의 표현을 살린다."},
+            "content": {
+                "type": "string",
+                "description": (
+                    "저장할 내용. 경로·명령어·URL·코드·식별자는 사용자가 쓴 그대로, "
+                    "한 글자도 바꾸거나 줄이지 말고 옮긴다. "
+                    "'~/toss-api/apps/toss-ai-agent'를 '~/toss-api/app'으로 줄이면 "
+                    "그 알림은 쓸모가 없어진다. 줄일 것은 설명문이지 리터럴이 아니다. "
+                    "경로와 명령을 한 줄로 이어 붙이지도 않는다 — 실행할 수 없는 문자열이 된다."
+                ),
+            },
             "kind": {"type": "string", "enum": list(MEMORY_KINDS)},
             "schedule_date": {"type": "string", "description": "YYYY-MM-DD. 일정일이 있을 때만."},
             "reminder_at": {
@@ -177,6 +201,7 @@ def _validate_against_schema(spec: ToolSpec, args: dict) -> dict:
         },
         "required": ["content", "kind"],
     },
+    writes=True,
 )
 def _save_memory(content, kind, schedule_date=None, reminder_at=None, source="telegram", **_):
     now = now_kst()
@@ -300,21 +325,40 @@ def _list_memories(kind=None, query=None, limit=20, **_):
 
 @tool(
     name="complete_item",
-    description="번호로 항목을 완료 처리한다. 번호를 모르면 먼저 조회한다.",
+    description=(
+        "번호로 항목을 '완료'로 표시한다. 번호를 모르면 먼저 조회한다. "
+        "이것은 삭제가 아니다 — 항목은 저장소에 그대로 남고 완료 표시만 붙는다. "
+        "사용자가 지워 달라고 했으면 delete_item을 쓴다. 이 도구를 부르고 "
+        "'삭제했습니다'라고 답하면 안 된다."
+    ),
     parameters={
         "type": "object",
         "properties": {"seq": {"type": "integer", "description": "목록에 보이는 번호"}},
         "required": ["seq"],
     },
+    writes=True,
 )
-def _complete_item(seq, **_):
-    if not mark_done(int(seq)):
+def _complete_item(seq, source="telegram", **_):
+    if not mark_done(int(seq), source=source):
         raise ToolError(
             "item_not_found",
             f"{seq}번 항목을 찾지 못했습니다.",
             "list_schedule이나 list_memories로 번호를 확인하세요.",
         )
-    return {"completed": True, "seq": int(seq)}
+    # 쓰기 뒤에 다시 읽습니다. 모델에게도 "완료 표시일 뿐 남아 있다"는 사실이
+    # 결과로 보여야, 답변에서 삭제라고 부르지 않습니다.
+    after = get_item(int(seq))
+    if after is None or not after["done"]:
+        raise ToolError(
+            "complete_not_verified",
+            f"{seq}번을 완료 처리했으나 반영을 확인하지 못했습니다.",
+            "사용자에게 '시도했으나 확인하지 못했다'고 그대로 알리세요.",
+        )
+    return {
+        "completed": True, "verified": True, "seq": int(seq),
+        "still_stored": True,
+        "note": "완료 표시만 붙었고 항목은 저장소에 남아 있습니다. 삭제가 아닙니다.",
+    }
 
 
 @tool(
@@ -353,6 +397,7 @@ def _list_projects(status=None, **_):
         "properties": {"name": {"type": "string"}},
         "required": ["name"],
     },
+    writes=True,
 )
 def _add_project(name, source="telegram", **_):
     existing = find_projects_by_name(name)
@@ -401,6 +446,7 @@ def _add_project(name, source="telegram", **_):
         },
         "required": ["name"],
     },
+    writes=True,
 )
 def _update_project(
     name, status=None, sub_status=None, next_steps=None, note=None, blockers=None,
@@ -482,6 +528,7 @@ def _update_project(
         },
         "required": ["name", "note"],
     },
+    writes=True,
 )
 def _add_project_note(name, note, source="telegram", **_):
     matches = find_projects_by_name(name)
@@ -514,6 +561,214 @@ def _add_project_note(name, note, source="telegram", **_):
 
     # 실제로 파일에 적힌 줄을 그대로 돌려줍니다.
     return {"added": True, "name": project["name"], "entry": entry}
+
+
+
+@tool(
+    name="delete_item",
+    description=(
+        "번호로 항목을 목록에서 지운다. 사용자가 '지워줘/삭제해줘'라고 했을 때 쓴다. "
+        "complete_item(완료 처리)과 혼동하지 마라 — 완료 처리한 항목은 여전히 저장소에 "
+        "남아 있으므로, 완료 처리해 놓고 '삭제했습니다'라고 답하면 거짓말이 된다. "
+        "결과의 verified가 true일 때만 지웠다고 말한다."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {"seq": {"type": "integer", "description": "목록에 보이는 번호"}},
+        "required": ["seq"],
+    },
+    writes=True,
+)
+def _delete_item(seq, **_):
+    result = delete_item(int(seq))
+    if not result["deleted"]:
+        raise ToolError(
+            "item_not_found",
+            f"{seq}번 항목을 찾지 못했습니다. 이미 지웠거나 번호가 다릅니다.",
+            "list_schedule이나 list_memories로 번호를 확인하세요.",
+        )
+    if not result["verified"]:
+        # 쓰기는 했는데 다시 읽어 확인하지 못했습니다. 됐다고 말하면 안 됩니다.
+        raise ToolError(
+            "delete_not_verified",
+            f"{seq}번을 지우려 했으나 반영을 확인하지 못했습니다.",
+            "사용자에게 '시도했으나 확인하지 못했다'고 그대로 알리세요.",
+        )
+    return {"deleted": True, "verified": True, "seq": result["seq"],
+            "content": result["content"]}
+
+
+@tool(
+    name="save_recurring_schedule",
+    description=(
+        "반복되는 알림을 규칙 한 건으로 저장한다. '평일 아침 6시', '매주 월수금 20시' "
+        "처럼 되풀이되는 것은 전부 이 도구를 쓴다. 단발 여러 건으로 펼쳐서 "
+        "save_memory를 반복 호출하지 마라 — 나중에 시각 하나를 바꾸려면 펼쳐 놓은 "
+        "것을 전부 찾아 고쳐야 하고, 사용자가 말한 규칙 자체가 사라진다."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "content": {
+                "type": "string",
+                "description": (
+                    "알림에 실을 내용. 경로·명령어·URL은 사용자가 쓴 그대로 옮긴다."
+                ),
+            },
+            "weekdays": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "울릴 요일. 월=0, 화=1 … 일=6. 평일이면 [0,1,2,3,4].",
+            },
+            "at_time": {"type": "string", "description": "HH:MM (24시간제)"},
+            "starts_on": {"type": "string", "description": "YYYY-MM-DD. 첫 발송 가능일."},
+            "ends_on": {
+                "type": "string",
+                "description": "YYYY-MM-DD. 마지막 발송일. 끝이 없으면 넣지 않는다.",
+            },
+        },
+        "required": ["content", "weekdays", "at_time", "starts_on"],
+    },
+    writes=True,
+)
+def _save_recurring_schedule(
+    content, weekdays, at_time, starts_on, ends_on=None, source="telegram", **_
+):
+    _parse_date(starts_on, "starts_on")
+    if ends_on:
+        if _parse_date(ends_on, "ends_on") < _parse_date(starts_on, "starts_on"):
+            raise ToolError(
+                "invalid_range",
+                f"종료일({ends_on})이 시작일({starts_on})보다 앞섭니다.",
+                "두 날짜를 다시 계산하세요.",
+            )
+    try:
+        days = parse_weekdays(weekdays)
+    except (ValueError, TypeError) as error:
+        raise ToolError(
+            "invalid_weekdays", str(error), "월=0 … 일=6 정수 배열로 보내세요."
+        ) from error
+    try:
+        hour, _, minute = at_time.partition(":")
+        if not (0 <= int(hour) <= 23 and 0 <= int(minute) <= 59):
+            raise ValueError
+    except (ValueError, AttributeError):
+        raise ToolError(
+            "invalid_time", f"at_time('{at_time}')을 HH:MM으로 해석할 수 없습니다.",
+            "24시간제 HH:MM으로 보내세요. 예: 06:10",
+        )
+
+    rule = create_recurrence(
+        content=content, weekdays=days, at_time=at_time, starts_on=starts_on,
+        ends_on=ends_on, source=source,
+    )
+    return {
+        "saved": True, "recurrence_seq": rule["seq"],
+        "weekdays": format_weekdays(rule["weekdays"]), "at_time": rule["at_time"],
+        "starts_on": rule["starts_on"], "ends_on": rule["ends_on"],
+    }
+
+
+@tool(
+    name="list_recurring_schedules",
+    description=(
+        "저장된 반복 규칙을 조회한다. 사용자가 반복 알림을 묻거나 고쳐 달라고 하면 "
+        "먼저 이걸 불러서 실제로 무엇이 저장돼 있는지 확인한다. 기억으로 답하지 마라."
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+def _list_recurring_schedules(**_):
+    rules = list_recurrences()
+    return {
+        "count": len(rules),
+        "recurrences": [
+            {
+                "recurrence_seq": rule["seq"],
+                "content": rule["content"],
+                "weekdays": format_weekdays(rule["weekdays"]),
+                "weekday_numbers": rule["weekdays"],
+                "at_time": rule["at_time"],
+                "starts_on": rule["starts_on"],
+                "ends_on": rule["ends_on"],
+                "timezone": rule["timezone"],
+                "last_fired_on": rule["last_fired_on"],
+            }
+            for rule in rules
+        ],
+    }
+
+
+@tool(
+    name="update_recurring_schedule",
+    description=(
+        "반복 규칙의 시각·요일·기간·내용을 고친다. 번호는 list_recurring_schedules의 "
+        "recurrence_seq다. 바꾸려는 필드만 넣는다."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "recurrence_seq": {"type": "integer"},
+            "content": {"type": "string"},
+            "weekdays": {"type": "array", "items": {"type": "integer"}},
+            "at_time": {"type": "string", "description": "HH:MM"},
+            "starts_on": {"type": "string", "description": "YYYY-MM-DD"},
+            "ends_on": {"type": "string", "description": "YYYY-MM-DD"},
+        },
+        "required": ["recurrence_seq"],
+    },
+    writes=True,
+)
+def _update_recurring_schedule(recurrence_seq, source="telegram", **fields):
+    fields.pop("source", None)
+    result = update_recurrence(int(recurrence_seq), source=source, **fields)
+    if not result["updated"]:
+        raise ToolError(
+            "recurrence_not_found",
+            f"반복 규칙 R{recurrence_seq}을 찾지 못했습니다.",
+            "list_recurring_schedules로 번호를 확인하세요.",
+        )
+    if not result["verified"]:
+        raise ToolError(
+            "update_not_verified",
+            f"R{recurrence_seq}을 고치려 했으나 반영을 확인하지 못했습니다.",
+            "사용자에게 '시도했으나 확인하지 못했다'고 그대로 알리세요.",
+        )
+    record = result["record"]
+    return {
+        "updated": True, "verified": True, "recurrence_seq": record["seq"],
+        "content": record["content"],
+        "weekdays": format_weekdays(record["weekdays"]),
+        "at_time": record["at_time"], "starts_on": record["starts_on"],
+        "ends_on": record["ends_on"],
+    }
+
+
+@tool(
+    name="delete_recurring_schedule",
+    description="반복 규칙을 지운다. 번호는 list_recurring_schedules의 recurrence_seq다.",
+    parameters={
+        "type": "object",
+        "properties": {"recurrence_seq": {"type": "integer"}},
+        "required": ["recurrence_seq"],
+    },
+    writes=True,
+)
+def _delete_recurring_schedule(recurrence_seq, source="telegram", **_):
+    result = delete_recurrence(int(recurrence_seq), source=source)
+    if not result["deleted"]:
+        raise ToolError(
+            "recurrence_not_found",
+            f"반복 규칙 R{recurrence_seq}을 찾지 못했습니다.",
+            "list_recurring_schedules로 번호를 확인하세요.",
+        )
+    if not result["verified"]:
+        raise ToolError(
+            "delete_not_verified",
+            f"R{recurrence_seq}을 지우려 했으나 반영을 확인하지 못했습니다.",
+            "사용자에게 '시도했으나 확인하지 못했다'고 그대로 알리세요.",
+        )
+    return {"deleted": True, "verified": True, "recurrence_seq": result["seq"],
+            "content": result["content"]}
 
 
 @tool(
@@ -552,8 +807,15 @@ def schemas() -> list[dict]:
     return [spec.schema() for spec in REGISTRY.values()]
 
 
-def execute(name: str, args: dict, source: str = "telegram") -> dict:
-    """도구를 검증하고 실행합니다. 실패도 dict로 돌려줍니다(예외 아님)."""
+def execute(
+    name: str, args: dict, source: str = "telegram", dry_run: bool = False
+) -> dict:
+    """도구를 검증하고 실행합니다. 실패도 dict로 돌려줍니다(예외 아님).
+
+    dry_run=True 면 쓰기 도구는 인자 검증까지만 하고 실행하지 않습니다.
+    검증은 그대로 도는 것이 중요합니다 — shadow 로그에 "이 인자로는 어차피
+    실패했을 것"이라는 정보까지 남아야 골든셋으로 쓸 수 있습니다.
+    """
     spec = REGISTRY.get(name)
     if spec is None:
         return {
@@ -563,6 +825,8 @@ def execute(name: str, args: dict, source: str = "telegram") -> dict:
         }
     try:
         cleaned = _validate_against_schema(spec, args or {})
+        if dry_run and spec.writes:
+            return {"dry_run": True, "would_call": name, "args": cleaned}
         return spec.handler(source=source, **cleaned)
     except ToolError as error:
         return error.to_result()
@@ -583,5 +847,6 @@ def context_summary() -> dict:
         "now": now_kst().strftime(DATETIME_FORMAT),
         "open_schedules": counts["open_schedules"],
         "ideas": counts["ideas"],
+        "recurrences": len(list_recurrences()),
         "project_names": [p["name"] for p in load_projects()],
     }

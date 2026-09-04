@@ -19,6 +19,7 @@ shadow가 기본값입니다. 배포해도 사용자 경험이 그대로이고, 
 
 import logging
 import os
+import re
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -26,7 +27,18 @@ from dataclasses import dataclass
 from .agent import run_turn
 from .ai import ask_gemini
 from .db import log_event, transaction
-from .memory import add_memory, archive_past_schedules, format_schedule_by_date
+from .memory import (
+    add_memory,
+    archive_past_schedules,
+    create_recurrence,
+    delete_item,
+    delete_recurrence,
+    format_recurrences_raw,
+    format_schedule_by_date,
+    format_schedule_raw,
+    format_weekdays,
+    list_recurrences,
+)
 from .projects import (
     ACTION_ADD,
     ACTION_MUTE_BRIEFING,
@@ -47,7 +59,15 @@ from .projects import (
     parse_project_note,
     update_project,
 )
-from .schedule_parser import detect_message_intent
+from .schedule_parser import (
+    INSTRUCTION_DELETE,
+    INSTRUCTION_SHOW_RAW,
+    detect_instruction,
+    detect_message_intent,
+    parse_item_refs,
+    parse_recurrence_refs,
+    parse_recurrence_request,
+)
 from .secretary import WriteBackError
 from .settings import ROUTER_MODE
 
@@ -147,6 +167,144 @@ def _handle_project_note(note: tuple, text: str, source: str) -> Reply:
     return Reply(f"'{project['name']}' _STATUS.md에 적었습니다.\n{entry}")
 
 
+def _handle_instruction(instruction: str, text: str, source: str) -> Iterator[Reply]:
+    """저장된 것에 대한 지시를 처리합니다. 이 경로는 새 일정을 만들지 않습니다.
+
+    여기서 LLM을 부르지 않는 것이 핵심입니다. ask_gemini에는 도구가 하나도
+    없어서 무엇도 지우거나 고칠 수 없는데, 프롬프트에 기억 전문이 들어가 있어
+    "[12]와 [13]을 삭제했습니다" 같은 문장을 자연스럽게 만들어 냅니다.
+    실제로는 아무 일도 일어나지 않은 채로요.
+    """
+    if instruction == INSTRUCTION_SHOW_RAW:
+        _log_turn(text, source, "instruction.show_raw")
+        yield Reply(format_schedule_raw())
+        return
+
+    item_refs = parse_item_refs(text)
+    recurrence_refs = parse_recurrence_refs(text)
+
+    if instruction == INSTRUCTION_DELETE:
+        if not item_refs and not recurrence_refs:
+            _log_turn(text, source, "instruction.delete", {"refs": []})
+            yield Reply(
+                "어느 항목을 지울지 번호로 알려주세요. 예: [12] 지워줘\n"
+                "번호는 !원본 으로 확인할 수 있습니다."
+            )
+            return
+
+        lines = []
+        for seq in item_refs:
+            result = delete_item(seq)
+            if not result["deleted"]:
+                lines.append(f"[{seq}] 찾지 못했습니다. 이미 지웠거나 번호가 다릅니다.")
+            elif result["verified"]:
+                lines.append(f"[{seq}] 지웠습니다: {result['content'].splitlines()[0][:60]}")
+            else:
+                # 썼는데 다시 읽어 확인하지 못했습니다. 됐다고 말하지 않습니다.
+                lines.append(f"[{seq}] 지우려 했으나 반영을 확인하지 못했습니다.")
+        for seq in recurrence_refs:
+            result = delete_recurrence(seq, source=source)
+            if not result["deleted"]:
+                lines.append(f"[R{seq}] 반복 규칙을 찾지 못했습니다.")
+            elif result["verified"]:
+                lines.append(f"[R{seq}] 반복 규칙을 지웠습니다: {result['content'][:60]}")
+            else:
+                lines.append(f"[R{seq}] 지우려 했으나 반영을 확인하지 못했습니다.")
+
+        _log_turn(text, source, "instruction.delete",
+                  {"items": item_refs, "recurrences": recurrence_refs})
+        yield Reply("\n".join(lines))
+        return
+
+    # 수정 요청. 내용을 통째로 고치는 기능은 아직 없습니다. 없다고 말합니다.
+    _log_turn(text, source, "instruction.edit",
+              {"items": item_refs, "recurrences": recurrence_refs})
+    referenced = ", ".join([f"[{seq}]" for seq in item_refs]
+                           + [f"[R{seq}]" for seq in recurrence_refs])
+    header = (
+        f"{referenced}에 대한 수정 요청으로 읽었습니다. 아무것도 바꾸지 않았습니다.\n\n"
+        if referenced else "수정 요청으로 읽었습니다. 아무것도 바꾸지 않았습니다.\n\n"
+    )
+    yield Reply(
+        header
+        + "지금 할 수 있는 것:\n"
+        "- 지우기: [번호] 지워줘\n"
+        "- 완료 표시: /done 번호\n"
+        "- 새로 저장: 고친 내용을 한 건으로 다시 보내주세요\n"
+        "- 반복 규칙 확인: !반복\n"
+        "- 저장된 원본 확인: !원본\n\n"
+        "저장된 내용의 본문을 그 자리에서 고치는 기능은 아직 없습니다. "
+        "지우고 다시 넣는 쪽이 확실합니다."
+    )
+
+
+def _handle_recurrence_request(recurrence: dict, text: str, source: str) -> Reply:
+    """반복 알림 요청을 규칙 한 건으로 저장합니다."""
+    content = _recurrence_content(text)
+    if not content:
+        _log_turn(text, source, "recurrence.unclear", recurrence)
+        return Reply(
+            f"{format_weekdays(','.join(str(day) for day in recurrence['weekdays']))} "
+            f"{recurrence['at_time']} 반복으로 읽었는데, 무엇을 알릴지 못 찾았습니다.\n"
+            "알림에 실을 내용을 한 줄로 알려주세요."
+        )
+
+    rule = create_recurrence(
+        content=content,
+        weekdays=recurrence["weekdays"],
+        at_time=recurrence["at_time"],
+        starts_on=recurrence["starts_on"],
+        ends_on=recurrence["ends_on"],
+        source=source,
+    )
+    _log_turn(text, source, "recurrence.created", {"seq": rule["seq"]})
+
+    # 저장한 값이 아니라 저장소에서 다시 읽은 값을 보여줍니다. 둘이 다르면
+    # 사용자가 바로 알아챌 수 있어야 합니다.
+    saved = [item for item in list_recurrences() if item["seq"] == rule["seq"]]
+    if not saved:
+        return Reply(
+            f"반복 규칙을 저장했으나(R{rule['seq']}) 다시 읽어 확인하지 못했습니다. "
+            "!반복 으로 확인해주세요."
+        )
+    return Reply("반복 규칙으로 저장했습니다.\n\n" + format_recurrences_raw(saved))
+
+
+# 반복 요청 문장에서 규칙을 나타내는 부분을 걷어내고 남는 것이 알림 내용입니다.
+_RECURRENCE_NOISE = re.compile(
+    r"(매일|매주|평일|주중|주말|날마다|요일마다|반복(\s*알림)?|정기적으로"
+    r"|[월화수목금토일]\s*[~\-]\s*[월화수목금토일]|[월화수목금토일]요일"
+    r"|\d{1,2}:\d{2}|\d{1,2}\s*시(\s*\d{1,2}\s*분)?|오전|오후|아침|저녁|밤"
+    r"|20\d{2}[-./]\d{1,2}[-./]\d{1,2}|\d{1,2}[./]\d{1,2}"
+    r"|\d{1,2}월\s*\d{1,2}일|부터|까지|에|으로|로|알려줘|알림)"
+)
+
+
+def _recurrence_content(text: str) -> str:
+    """반복 요청 문장에서 '무엇을 알릴지'만 남깁니다."""
+    stripped = _RECURRENCE_NOISE.sub(" ", text)
+    stripped = re.sub(r"[·,\-—:]+", " ", stripped)
+    return " ".join(stripped.split()).strip()
+
+
+def _answer_failure_message(error: Exception) -> str:
+    """답변 생성이 실패한 이유를 사용자가 대응할 수 있는 말로 바꿉니다.
+
+    한도 초과와 진짜 고장은 사용자가 할 일이 다릅니다. 전자는 기다리면 되고,
+    후자는 로그를 봐야 합니다. 둘 다 "오류가 발생했습니다"로 뭉뚱그리면
+    무엇을 해야 할지 알 수 없습니다. 무료 티어는 모델당 하루 20요청이라
+    실제로 자주 닿습니다.
+    """
+    detail = str(error)
+    if "RESOURCE_EXHAUSTED" in detail or "429" in detail:
+        return (
+            "LLM 사용 한도에 걸려 답변을 만들지 못했습니다. "
+            "저장과 조회는 그대로 됩니다 — !원본, !반복, !스케쥴 을 쓰세요.\n"
+            "한도는 잠시 뒤 풀립니다."
+        )
+    return "답변을 생성하는 중 오류가 발생했습니다. 저장된 내용은 그대로입니다."
+
+
 def _log_turn(text: str, source: str, route: str, detail: dict | None = None) -> None:
     """들어온 발화와 그 결과를 이벤트 로그에 남깁니다.
 
@@ -213,11 +371,20 @@ def _handle_with_llm(text: str, source: str) -> Iterator[Reply]:
 
 
 def _shadow_compare(text: str, source: str, regex_replies: list[Reply]) -> None:
-    """LLM 판단을 기록하고, 정규식과 다르면 표시해 둡니다."""
+    """LLM 판단을 기록하고, 정규식과 다르면 표시해 둡니다.
+
+    `dry_run=True` 가 이 함수의 전부입니다. shadow는 관찰이지 실행이 아닙니다.
+
+    이게 왜 명시적이어야 하는지: 예전에는 이 함수가 run_turn을 그냥 불렀고,
+    run_turn은 모델이 요청한 도구를 진짜로 실행했습니다. 문서에는 "로그에만
+    남는다"고 적혀 있었지만 실제로는 모든 메시지가 두 번 저장됐습니다 —
+    정규식이 원문 한 건, shadow LLM이 분해한 N건. 2026-09-04 하루에만
+    shadow가 89건을 썼습니다.
+    """
     from .llm.factory import get_client
 
     try:
-        result = run_turn(get_client(), text, source=f"{source}:shadow")
+        result = run_turn(get_client(), text, source=f"{source}:shadow", dry_run=True)
     except Exception:
         logging.exception("Shadow router failed")
         return
@@ -260,25 +427,53 @@ _ROUTE_TO_TOOL = {
     "chat": None,
     "command.schedule": "list_schedule",
     "command.projects": "list_projects",
+    "command.raw": "list_schedule",
+    "command.recurrences": "list_recurring_schedules",
     "project": "update_project",
+    "recurrence": "save_recurring_schedule",
+    # 정규식이 "저장하지 않고 되묻는다"로 판단한 자리입니다. LLM이 무엇을
+    # 했는지가 바로 이 경로의 관찰 대상이라, 고정된 정답을 두지 않습니다.
+    "ambiguous": "__unknown__",
 }
 
 
 def _classify_regex_route(text: str) -> str:
-    """정규식이 이 문장을 어느 경로로 보낼지, 상태를 바꾸지 않고 알아냅니다."""
+    """정규식이 이 문장을 어느 경로로 보낼지, 상태를 바꾸지 않고 알아냅니다.
+
+    _handle_with_regex 의 분기 순서와 같아야 합니다. 어긋나면 shadow 비교가
+    실제로 일어난 일이 아니라 다른 것을 견주게 됩니다.
+    """
     if text == "!스케쥴":
         return "command.schedule"
     if text == "!프로젝트":
         return "command.projects"
+    if text in ("!원본", "!raw"):
+        return "command.raw"
+    if text in ("!반복", "!recur"):
+        return "command.recurrences"
     if parse_project_note(text):
         return "project.note"
     if detect_project_action(text):
         return "project"
+    instruction = detect_instruction(text)
+    if instruction:
+        return f"instruction.{instruction}"
+    if parse_recurrence_request(text):
+        return "recurrence"
     return detect_message_intent(text)
 
 
 def _routes_agree(regex_route: str, llm_tool: str | None) -> bool:
     expected = _ROUTE_TO_TOOL.get(regex_route, "__unknown__")
+    if regex_route == "instruction.delete":
+        return llm_tool in ("delete_item", "delete_recurring_schedule")
+    if regex_route == "instruction.show_raw":
+        return llm_tool in ("list_schedule", "list_memories",
+                            "list_recurring_schedules")
+    if regex_route == "instruction.edit":
+        # 정규식은 "못 고친다"고 답합니다. LLM이 갱신 도구를 골랐다면 그게
+        # 바로 옮겨갈 만한 자리라는 신호입니다.
+        return llm_tool in ("update_recurring_schedule", "update_project", "clarify")
     if regex_route == "project.note":
         return llm_tool == "add_project_note"
     if regex_route == "project":
@@ -303,6 +498,18 @@ def _handle_with_regex(text: str, source: str) -> Iterator[Reply]:
         yield Reply(format_all_projects(), speak=True)
         return
 
+    # 각색 없이 레코드 필드를 그대로 보는 통로입니다. 요약이 원본과 어긋나는지
+    # 사용자가 확인할 수 있어야 합니다.
+    if text in ("!원본", "!raw"):
+        _log_turn(text, source, "command.raw")
+        yield Reply(format_schedule_raw())
+        return
+
+    if text in ("!반복", "!recur"):
+        _log_turn(text, source, "command.recurrences")
+        yield Reply(format_recurrences_raw())
+        return
+
     note = parse_project_note(text)
     if note:
         yield _handle_project_note(note, text, source)
@@ -315,7 +522,34 @@ def _handle_with_regex(text: str, source: str) -> Iterator[Reply]:
         yield reply
         return
 
+    # 지시문은 저장 대상이 아닙니다. 여기서 처리하고 끝냅니다. 아래로 흘려보내면
+    # ask_gemini가 도구도 없이 "삭제했습니다"라고 답하게 됩니다.
+    instruction = detect_instruction(text)
+    if instruction:
+        yield from _handle_instruction(instruction, text, source)
+        return
+
+    # 반복 요청은 단발로 저장하기 전에 붙잡습니다. 여기서 놓치면 "평일 05:10
+    # 반복"이 11/1 단발 한 건으로 남고, 사용자에게는 반복이 등록된 것처럼
+    # 들리는 답이 나갑니다.
+    recurrence = parse_recurrence_request(text)
+    if recurrence:
+        yield _handle_recurrence_request(recurrence, text, source)
+        return
+
     intent = detect_message_intent(text)
+
+    if intent == "ambiguous":
+        # 여러 항목이 섞인 메시지를 통째로 한 건으로 저장하지 않습니다.
+        # 오탐 하나가 캘린더에 영구히 남는 비용이, 되묻는 비용보다 큽니다.
+        _log_turn(text, source, "ambiguous")
+        yield Reply(
+            "여러 일정이 섞여 있는 것 같아 아직 저장하지 않았습니다.\n"
+            "한 건씩 보내주시면 그대로 저장하겠습니다. "
+            "되풀이되는 일정이면 '평일 06:10 보고서 확인'처럼 요일과 시각을 "
+            "적어주시면 반복 규칙으로 만듭니다."
+        )
+        return
 
     if intent == "save":
         saved = add_memory(text, source=source)
@@ -334,6 +568,6 @@ def _handle_with_regex(text: str, source: str) -> Iterator[Reply]:
 
     try:
         yield Reply(ask_gemini(text), speak=True)
-    except Exception:
+    except Exception as error:
         logging.exception("Error while generating an answer")
-        yield Reply("답변을 생성하는 중 오류가 발생했습니다.")
+        yield Reply(_answer_failure_message(error))

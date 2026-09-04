@@ -9,7 +9,14 @@ from datetime import datetime, timedelta
 
 from .ai import generate_morning_briefing
 from .db import log_event, transaction
-from .memory import get_due_reminders, mark_reminded
+from .memory import (
+    get_due_recurrences,
+    get_due_reminders,
+    mark_recurrence_fired,
+    mark_reminded,
+    skip_stale_recurrences,
+)
+from .memory import format_weekdays
 from .projects import get_briefing_projects, to_speech_friendly_name
 from .secretary import format_sync_result
 from .secretary import sync as sync_secretary_projects
@@ -138,6 +145,24 @@ def reminder_loop() -> None:
                 # UUID로 표시하므로, 그사이 다른 항목이 보관 처리돼도 엉뚱한
                 # 항목에 표시가 찍히지 않습니다.
                 mark_reminded(item["id"])
+
+            # 반복 규칙. 단발 일정과 달리 한 줄이 매번 다시 울립니다.
+            for rule in get_due_recurrences(current):
+                message = (
+                    "🔔 Marvis Reminder (반복)\n\n"
+                    f"- {rule['content']}\n\n"
+                    f"규칙: [R{rule['seq']}] {format_weekdays(rule['weekdays'])}"
+                    f" {rule['at_time']}"
+                )
+                if not send_proactive_telegram_message(message):
+                    continue
+                # 보낸 뒤에 표시합니다. 전송이 실패했는데 표시부터 하면
+                # 그날 알림은 영영 오지 않습니다.
+                mark_recurrence_fired(rule["id"], current.date().isoformat())
+
+            # 봇이 꺼져 있던 사이에 지나간 오늘치 규칙은 '건너뜀'으로 적어
+            # 둡니다. 오후 3시에 05:10 알림을 보내지 않기 위해서입니다.
+            skip_stale_recurrences(current)
         except Exception as error:
             logging.exception("Reminder loop error: %s", error)
         time.sleep(30)

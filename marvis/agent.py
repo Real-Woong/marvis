@@ -18,6 +18,14 @@ from .llm.tools import TERMINAL_TOOLS, context_summary, execute, schemas
 MAX_STEPS = 3
 # 같은 도구가 검증에 실패했을 때 다시 시도해 볼 횟수.
 MAX_RETRIES_PER_TOOL = 1
+# 한 턴에 허용하는 도구 호출 총량.
+#
+# 상한이 없던 시절, "월~금 반복 알림을 만들어 줘" 한 마디에 모델이 단발
+# 84건을 펼쳐 넣고 MAX_STEPS를 소진해 "요청을 처리했지만 정리해서
+# 말씀드리지 못했습니다"로 끝난 적이 있습니다. 사용자는 무엇이 저장됐는지
+# 듣지 못했고, DB에는 84건이 남았습니다. 이만큼 부르고 있다면 도구 선택이
+# 틀린 것이므로, 계속 쓰게 두는 것보다 멈추고 묻는 편이 낫습니다.
+MAX_TOOL_CALLS = 20
 
 SYSTEM_PROMPT = """너는 사용자의 개인 AI 비서 'Marvis'다.
 
@@ -36,10 +44,29 @@ SYSTEM_PROMPT = """너는 사용자의 개인 AI 비서 'Marvis'다.
 - 답변은 한국어로, 핵심부터 짧게. 이동 중 에어팟으로 들어도 이해할 수 있게 말한다.
 - 알림을 보냈다고 거짓말하지 않는다. 알림은 저장된 시각이 되면 시스템이 보낸다.
 
+완료 보고 규칙 (어기면 사용자가 저장소를 직접 열어보기 전까지 알 수 없다):
+- 도구를 부르지 않았으면 아무것도 하지 않은 것이다. "고쳤습니다",
+  "업데이트했습니다", "삭제했습니다"라고 쓰기 전에, 이번 턴에 그 도구를
+  실제로 불렀고 결과가 성공이었는지 확인한다.
+- 도구 결과에 verified: true 가 있을 때만 완료형으로 말한다. 없으면
+  "시도했으나 반영을 확인하지 못했습니다"라고 그대로 말한다.
+- 완료 보고에는 영향받은 번호를 함께 적는다. 예: "[12]를 지웠습니다."
+- 도구가 없는 기능은 "지원하지 않습니다"라고 말한다. 없는 동작을
+  미래형("자동으로 변경될 예정입니다")으로 서술하지 않는다. 저장소에 없는
+  규칙은 존재하지 않는 규칙이다.
+- 조회 결과를 옮길 때 레코드의 종류를 바꾸지 않는다. 단발 일정 한 건을
+  "반복 규칙"이라고 부르지 않는다.
+
+반복 일정:
+- 되풀이되는 알림은 save_recurring_schedule 로 규칙 한 건을 만든다.
+  save_memory 를 여러 번 불러 단발로 펼치지 않는다.
+- 반복 알림을 묻거나 고쳐 달라고 하면 먼저 list_recurring_schedules 로
+  실제로 저장된 것을 확인하고 답한다.
+
 지금:
 - 오늘: {today} ({weekday}요일)
 - 현재 시각: {now} (KST)
-- 미완료 일정 {open_schedules}건, 아이디어 {ideas}건
+- 미완료 일정 {open_schedules}건, 아이디어 {ideas}건, 반복 규칙 {recurrences}건
 - 등록된 프로젝트: {project_names}
 
 프로젝트 목록은 이름 확인용이다. 내용이 필요하면 list_projects를 불러라."""
@@ -70,6 +97,7 @@ def build_system_prompt() -> str:
         now=summary["now"],
         open_schedules=summary["open_schedules"],
         ideas=summary["ideas"],
+        recurrences=summary["recurrences"],
         project_names=names,
     )
 
@@ -99,8 +127,15 @@ def _log_trace(source: str, user_text: str, result: AgentResult, elapsed_ms: int
         logging.exception("Failed to log the agent trace")
 
 
-def run_turn(client, user_text: str, source: str = "telegram") -> AgentResult:
-    """사용자 발화 하나를 도구를 써서 처리합니다."""
+def run_turn(
+    client, user_text: str, source: str = "telegram", dry_run: bool = False
+) -> AgentResult:
+    """사용자 발화 하나를 도구를 써서 처리합니다.
+
+    dry_run=True 면 상태를 바꾸는 도구는 실행하지 않고, 무엇을 하려 했는지만
+    결과로 돌려줍니다. shadow 모드(관찰 전용)가 이걸 씁니다. 조회 도구는
+    그대로 돌아서 모델이 현실을 보고 판단하게 둡니다.
+    """
     started = time.monotonic()
     system = build_system_prompt()
     messages: list[Message] = [Message(role="user", text=user_text)]
@@ -137,7 +172,20 @@ def run_turn(client, user_text: str, source: str = "telegram") -> AgentResult:
         stop = False
 
         for call in response.tool_calls:
-            content = execute(call.name, call.args, source=source)
+            if len(result.tool_calls) >= MAX_TOOL_CALLS:
+                result.clarify = {
+                    "question": (
+                        f"한 번에 {MAX_TOOL_CALLS}건이 넘는 작업을 하려고 해서 "
+                        "멈췄습니다. 반복되는 일정이라면 반복 규칙 하나로 만들 수 "
+                        "있습니다. 어떻게 할까요?"
+                    ),
+                    "options": [],
+                }
+                result.text = result.clarify["question"]
+                result.error = "tool_call_limit"
+                stop = True
+                break
+            content = execute(call.name, call.args, source=source, dry_run=dry_run)
             result.tool_calls.append(
                 {"name": call.name, "args": call.args, "ok": "error" not in content}
             )

@@ -307,13 +307,30 @@ class ToolSurfaceTest(unittest.TestCase):
     def test_all_tools_have_a_schema_and_description(self):
         expected = {
             "save_memory", "list_schedule", "list_memories", "complete_item",
-            "list_projects", "add_project", "update_project", "add_project_note",
-            "clarify",
+            "delete_item", "list_projects", "add_project", "update_project",
+            "add_project_note", "save_recurring_schedule",
+            "list_recurring_schedules", "update_recurring_schedule",
+            "delete_recurring_schedule", "clarify",
         }
         self.assertEqual(set(REGISTRY), expected)
         for name, spec in REGISTRY.items():
             self.assertTrue(spec.description.strip(), name)
             self.assertEqual(spec.parameters["type"], "object", name)
+
+    def test_every_tool_declares_whether_it_writes(self):
+        """shadow(관찰 전용)가 무엇을 막아야 할지는 이 표시로만 알 수 있습니다.
+
+        새 도구를 만들면서 writes 를 빠뜨리면 기본값 False 로 등록되어,
+        shadow 실행에서 조용히 진짜 쓰기를 하게 됩니다. 정확히 그 일이
+        2026-09-04 에 일어났습니다.
+        """
+        writers = {
+            "save_memory", "complete_item", "delete_item", "add_project",
+            "update_project", "add_project_note", "save_recurring_schedule",
+            "update_recurring_schedule", "delete_recurring_schedule",
+        }
+        for name, spec in REGISTRY.items():
+            self.assertEqual(spec.writes, name in writers, name)
 
     def test_forget_all_is_not_a_tool(self):
         """모델이 전체 보관을 부를 수 있는 경로가 있으면 안 됩니다."""

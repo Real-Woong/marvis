@@ -17,6 +17,7 @@ from .handlers import (
     schedule_command,
     start,
 )
+from .logging_setup import configure_logging
 from .migrate import run_migration_if_needed
 from .secretary import format_sync_result
 from .secretary import sync as sync_secretary_projects
@@ -28,10 +29,9 @@ from .webhook import start_webhook_server
 def main() -> None:
     """설정을 검증하고 알림 작업과 Telegram polling을 시작합니다."""
     validate_required_settings()
-    logging.basicConfig(
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        level=logging.INFO,
-    )
+    # basicConfig 를 쓰지 않습니다. 루트를 INFO 로 열면 httpx 가 요청 URL을
+    # 통째로 찍고, 텔레그램 토큰은 그 URL 경로 안에 있습니다.
+    configure_logging()
     # 스키마를 만들고, 예전 JSON 데이터가 남아 있으면 1회만 옮깁니다.
     run_migration_if_needed()
     # 켜지자마자 SECRETARY의 _STATUS.md 상태를 한 번 당겨옵니다. 브리핑을
