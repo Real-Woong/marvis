@@ -471,6 +471,37 @@ class ShadowModeIsReadOnlyTest(unittest.TestCase):
         self.assertEqual(len(memory.list_recurrences()), rule_count)
 
 
+class RememberRequestIsSavedTest(unittest.TestCase):
+    """2026-09-10. "~ 기억해줘"가 저장되지 않고 조회로 빠졌습니다.
+
+    "기억해"가 조회 목록과 저장 목록 양쪽에 있었고, 조회 검사가 먼저라
+    저장 규칙에 닿지 못했습니다. 사용자에게는 "저장된 내용을 확인하고
+    있습니다..." 뒤에 LLM 잡담만 갔고, 남은 것은 없었습니다.
+    """
+
+    def setUp(self):
+        _reset_database()
+
+    def test_remember_request_is_a_save(self):
+        text = "내일 학교가서 재학증명서 프린트하기 기억해줘"
+        self.assertEqual(detect_message_intent(text), "save")
+        list(core.handle_message(text, source="telegram"))
+        self.assertEqual(_item_count(), 1)
+
+    def test_other_remember_phrasings_are_saved_too(self):
+        for text in ("다음주 월요일 수강신청 기억해줘",
+                     "재학증명서 프린트 기억해",
+                     "우산 챙기기 기억해 줘"):
+            self.assertEqual(detect_message_intent(text), "save", text)
+
+    def test_asking_what_was_remembered_is_still_a_query(self):
+        """저장 쪽으로 옮기느라 조회 문장까지 저장하면 안 됩니다."""
+        for text in ("내가 부탁한 거 기억나?",
+                     "어제 말한 일정 기억하고 있어?",
+                     "저장한 내용 보여줘"):
+            self.assertNotEqual(detect_message_intent(text), "save", text)
+
+
 class AgentLimitsTest(unittest.TestCase):
     """한 턴이 저장소에 남길 수 있는 양에 상한이 있어야 합니다."""
 
