@@ -256,7 +256,7 @@ class BriefingWindowTest(unittest.TestCase):
         message = self.sent[0]
         for name in ("Alpha", "Beta", "Gamma"):
             self.assertIn(f"{name}: {name} 다음 할 일", message)
-        self.assertIn("[오늘 일정]", message)
+        self.assertIn("[오늘 할 일]", message)
         self.assertIn("[프로젝트]", message)
 
     def test_a_failed_send_is_not_marked_as_sent(self):
@@ -269,6 +269,32 @@ class BriefingWindowTest(unittest.TestCase):
         )
         send_morning_briefing_if_due(self._weekday_at(8, 40))
         self.assertEqual(len(self.sent), 1)
+
+    def test_todays_items_are_listed_whether_or_not_they_have_a_time(self):
+        """아침 브리핑이 오늘 할 일을 모아 보여주는 유일한 자리입니다.
+
+        시각을 적지 않은 일정은 그날 따로 알림이 울리지 않습니다. 여기에
+        없으면 볼 곳이 없습니다.
+        """
+        from marvis import memory as memory_module
+        from marvis.reminders import build_briefing_message
+
+        current = self._weekday_at(8, 35)
+        today = current.date().isoformat()
+        memory_module.create_item(
+            content="재학증명서 프린트하기", kind="schedule", schedule_date=today
+        )
+        memory_module.create_item(
+            content="통신사 전화", kind="schedule", schedule_date=today,
+            reminder_at=f"{today} 09:00:00",
+        )
+
+        message = build_briefing_message(current)
+        self.assertIn("[오늘 할 일]", message)
+        self.assertIn("재학증명서 프린트하기", message)
+        self.assertIn("09:00", message)
+        # 시각이 있는 것이 먼저, 미정이 뒤.
+        self.assertLess(message.index("통신사 전화"), message.index("재학증명서"))
 
     def test_sunday_has_no_briefing(self):
         current = now_kst()

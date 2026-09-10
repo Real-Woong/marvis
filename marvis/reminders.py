@@ -11,6 +11,7 @@ from .db import log_event, transaction
 from .memory import (
     get_due_recurrences,
     get_due_reminders,
+    get_recurrences_on,
     get_schedules_between,
     mark_recurrence_fired,
     mark_reminded,
@@ -84,24 +85,34 @@ def _one_line(text: str) -> str:
     return " ".join((text or "").split())
 
 
-def format_today_schedule_lines(today) -> list[str]:
-    """오늘 날짜로 저장된 일정을 시각 순으로 늘어놓습니다.
+def format_today_todo_lines(today) -> list[str]:
+    """오늘 해야 할 것을 시각 순으로 늘어놓습니다.
+
+    시각을 지정한 것과 날짜만 정한 것을 한 목록에 담습니다. 시각을 지정한
+    것은 그 시각에 따로 알림이 한 번 더 갑니다. 여기서 빠지면 "오늘 뭐
+    하지"를 볼 곳이 없어집니다.
 
     LLM에게 한 문장으로 요약시키지 않는 이유: 요약은 저장된 것과 달라질 수
     있고, 모델이 503을 내면 브리핑 자체가 나가지 않았습니다(2026-09-10).
     저장된 값을 그대로 옮기면 둘 다 일어나지 않습니다.
     """
     stamp = today.isoformat()
-    items = get_schedules_between(stamp, stamp)
-    if not items:
-        return ["  오늘 일정 없음"]
-
-    lines = []
-    for item in items:
+    entries = []
+    for item in get_schedules_between(stamp, stamp):
         reminder = item.get("reminder_at")
-        at = reminder[11:16] if reminder else _NO_TIME
-        lines.append(f"  {at}  {_one_line(item['content'])}")
-    return lines
+        at = reminder[11:16] if reminder else None
+        entries.append((at, f"[{item['seq']}] {_one_line(item['content'])}"))
+    for rule in get_recurrences_on(today):
+        entries.append(
+            (rule["at_time"], f"[R{rule['seq']}] {_one_line(rule['content'])} (반복)")
+        )
+
+    if not entries:
+        return ["  오늘 할 일 없음"]
+
+    # 시각이 있는 것부터 시각 순으로, 시각 미정은 맨 뒤에.
+    entries.sort(key=lambda entry: (entry[0] is None, entry[0] or ""))
+    return [f"  {at or _NO_TIME}  {text}" for at, text in entries]
 
 
 def format_briefing_project_lines() -> list[str]:
@@ -120,8 +131,8 @@ def build_briefing_message(current: datetime) -> str:
     today = current.date()
     weekday = _WEEKDAY_NAMES[today.weekday()]
     return "\n".join(
-        [f"📋 {today.isoformat()} ({weekday}) 브리핑", "", "[오늘 일정]"]
-        + format_today_schedule_lines(today)
+        [f"📋 {today.isoformat()} ({weekday}) 브리핑", "", "[오늘 할 일]"]
+        + format_today_todo_lines(today)
         + ["", "[프로젝트]"]
         + format_briefing_project_lines()
     )

@@ -12,7 +12,12 @@ Phase 0에서 바뀐 것 두 가지:
 from datetime import date, datetime, timedelta
 
 from .db import get_connection, log_event, new_id, next_seq, transaction
-from .schedule_parser import classify_memory, extract_reminder_datetime, extract_schedule_date
+from .schedule_parser import (
+    classify_memory,
+    extract_reminder_datetime,
+    extract_schedule_date,
+    strip_request_tail,
+)
 from .time_utils import now_string, today_kst_date
 
 WEEKDAY_NAMES = ["월", "화", "수", "목", "금", "토", "일"]
@@ -62,7 +67,12 @@ def archive_past_schedules() -> int:
 
 
 def add_memory(text: str, source: str = "telegram") -> dict:
-    """정규식으로 분류·날짜 추출한 뒤 저장합니다(구 라우터 경로)."""
+    """정규식으로 분류·날짜 추출한 뒤 저장합니다(구 라우터 경로).
+
+    분류와 날짜는 원문에서 뽑고, 저장하는 본문에서는 부탁하는 꼬리말을
+    떼어냅니다. 순서가 중요합니다 — "알려줘"를 먼저 떼면 그 문장은 더 이상
+    일정으로 읽히지 않습니다.
+    """
     memory_type = classify_memory(text)
     schedule_date = extract_schedule_date(text)
     reminder_at = extract_reminder_datetime(text, schedule_date)
@@ -75,7 +85,7 @@ def add_memory(text: str, source: str = "telegram") -> dict:
             schedule_date = None
 
     return create_item(
-        content=text,
+        content=strip_request_tail(text),
         kind=memory_type,
         schedule_date=schedule_date,
         reminder_at=reminder_at,
@@ -587,6 +597,16 @@ def _occurs_on(rule: dict, day: date) -> bool:
     if rule["ends_on"] and day.isoformat() > rule["ends_on"]:
         return False
     return day.weekday() in {int(part) for part in rule["weekdays"].split(",") if part != ""}
+
+
+def get_recurrences_on(day: date) -> list[dict]:
+    """그날 울리는 반복 규칙 전부. 이미 울렸는지는 보지 않습니다.
+
+    아침 브리핑의 '오늘 할 일'에 씁니다. 발송 대상을 고르는
+    get_due_recurrences 와 달리, 여기서는 하루치 목록을 보여주는 것이
+    목적이라 05:10에 이미 울린 규칙도 그대로 들어갑니다.
+    """
+    return [rule for rule in list_recurrences() if _occurs_on(rule, day)]
 
 
 def next_occurrence(rule: dict, after: datetime, limit_days: int = 400) -> datetime | None:

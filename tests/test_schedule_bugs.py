@@ -36,6 +36,7 @@ from marvis.schedule_parser import (  # noqa: E402
     detect_message_intent,
     parse_item_refs,
     parse_recurrence_request,
+    strip_request_tail,
 )
 from marvis.settings import KST  # noqa: E402
 from marvis.voice import split_for_telegram  # noqa: E402
@@ -500,6 +501,47 @@ class RememberRequestIsSavedTest(unittest.TestCase):
                      "어제 말한 일정 기억하고 있어?",
                      "저장한 내용 보여줘"):
             self.assertNotEqual(detect_message_intent(text), "save", text)
+
+
+class RequestTailIsNotPartOfTheContentTest(unittest.TestCase):
+    """"기억해줘"까지 본문에 저장되면 목록과 브리핑에 그 말이 따라다닙니다."""
+
+    def setUp(self):
+        _reset_database()
+
+    def test_the_tail_is_stripped_from_what_is_saved(self):
+        saved = memory.add_memory("내일 학교가서 재학증명서 프린트하기 기억해줘")
+        self.assertEqual(saved["content"], "내일 학교가서 재학증명서 프린트하기")
+
+    def test_stripping_does_not_change_the_date_or_the_type(self):
+        """분류와 날짜는 원문에서 뽑아야 합니다.
+
+        "알려줘"를 먼저 떼면 그 문장은 더 이상 일정으로 읽히지 않습니다.
+        """
+        saved = memory.add_memory("내일 9시에 통신사 전화 알려줘")
+        self.assertEqual(saved["type"], "schedule")
+        self.assertIsNotNone(saved["schedule_date"])
+        self.assertIsNotNone(saved["reminder_at"])
+        self.assertEqual(saved["content"], "내일 9시에 통신사 전화")
+
+    def test_various_tails(self):
+        for text, expected in (
+            ("내일 10시 회의 좀 기억해줘.", "내일 10시 회의"),
+            ("9/12 병원 예약 저장해줘", "9/12 병원 예약"),
+            ("TAPIoca 일정 등록 부탁해", "TAPIoca 일정 등록"),
+            ("우산 챙기기 메모해", "우산 챙기기"),
+        ):
+            self.assertEqual(strip_request_tail(text), expected, text)
+
+    def test_a_tail_only_message_keeps_its_text(self):
+        """떼고 나면 아무것도 안 남는 경우, 그 말이 내용의 전부입니다."""
+        self.assertEqual(strip_request_tail("기억해줘"), "기억해줘")
+
+    def test_the_middle_of_a_sentence_is_untouched(self):
+        self.assertEqual(
+            strip_request_tail("내일 병원 가서 결과 알려줘야 함"),
+            "내일 병원 가서 결과 알려줘야 함",
+        )
 
 
 class AgentLimitsTest(unittest.TestCase):

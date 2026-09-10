@@ -190,6 +190,57 @@ def detect_instruction(text: str) -> str | None:
     return None
 
 
+# 저장을 부탁하는 꼬리말입니다. 판별에는 쓰고, 본문에는 남기지 않습니다.
+#
+# "내일 학교가서 재학증명서 프린트하기 기억해줘"를 통째로 저장하면 목록과
+# 아침 브리핑에 "기억해줘"까지 따라다닙니다. 할 일은 "재학증명서 프린트하기"
+# 지, 저에게 한 부탁이 아닙니다.
+#
+# 문장 끝에서만 떼어냅니다. "알려줘"는 가운데 있으면 내용의 일부일 수
+# 있습니다("전화해서 알려줘야 해").
+_REQUEST_TAILS = (
+    "기억해줘", "기억해 줘", "기억해주세요", "기억 해줘", "기억해",
+    "저장해줘", "저장해 줘", "저장해주세요", "저장해",
+    "메모해줘", "메모해 줘", "메모해주세요", "메모해",
+    "기록해줘", "기록해 줘", "기록해주세요", "기록해",
+    "등록해줘", "등록해 줘", "등록해주세요", "등록해",
+    "추가해줘", "추가해 줘", "추가해주세요", "추가해",
+    "리마인드해줘", "리마인드 해줘", "리마인드해", "리마인드",
+    "알려줘", "알려 줘", "알려주세요", "알림 줘",
+    "챙겨줘", "챙겨 줘", "챙겨주세요",
+    "잊지 않게 해줘", "잊지 않게",
+    "부탁해요", "부탁드려요", "부탁드려", "부탁해",
+    "좀",
+)
+
+# 꼬리말 뒤에 붙는 문장부호와 조사입니다.
+_TAIL_PUNCTUATION = " .!~,·"
+
+
+def strip_request_tail(text: str) -> str:
+    """저장할 본문에서 부탁하는 말을 떼어냅니다.
+
+    분류와 날짜 추출은 원문으로 해야 합니다. "알려줘"가 사라진 문장은
+    일정으로 읽히지 않을 수 있습니다. 이 함수는 저장할 내용에만 씁니다.
+
+    떼고 나서 아무것도 남지 않으면 원문을 그대로 둡니다. "기억해줘" 한 마디만
+    보냈다면 그게 내용의 전부입니다.
+    """
+    stripped = text.strip()
+    # "일정 등록 부탁해" 처럼 꼬리말이 겹쳐 붙는 경우가 있어 되풀이합니다.
+    for _ in range(3):
+        before = stripped
+        candidate = stripped.rstrip(_TAIL_PUNCTUATION)
+        for tail in _REQUEST_TAILS:
+            if candidate.endswith(tail):
+                candidate = candidate[: -len(tail)].rstrip(_TAIL_PUNCTUATION)
+                break
+        stripped = candidate
+        if stripped == before:
+            break
+    return stripped or text.strip()
+
+
 def detect_message_intent(text: str) -> str:
     """메세지가 저장 요철, 조회질문, 일반 대화 중 무엇인지 판별"""
     normalized = " ".join(text.lower().split())
