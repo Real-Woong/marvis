@@ -40,6 +40,11 @@ LEGACY_PROJECTS_FILE = BASE_DIR / "marvis_projects.json"
 
 VOICE_DIR = BASE_DIR / "voices"
 
+# 음성 답변. 텔레그램에서는 텍스트와 오디오가 각각 한 통이라, 켜 두면 답장이
+# 늘 두 통씩 옵니다. 기본은 꺼짐이고, 듣고 싶어지면 MARVIS_VOICE=1 로 켭니다.
+VOICE_ENABLED = (os.getenv("MARVIS_VOICE", "0").strip().lower()
+                 in ("1", "true", "yes", "on"))
+
 # SECRETARY(프로젝트 상태 수집기)는 같은 맥미니의 형제 디렉터리에 있습니다.
 #   ~/Desktop/project/SECRETARY
 #   ~/Desktop/project/Project_AI/LLM/Marvis   <- BASE_DIR

@@ -7,7 +7,7 @@ from pathlib import Path
 from gtts import gTTS
 from telegram import Update
 
-from .settings import VOICE_DIR
+from .settings import VOICE_DIR, VOICE_ENABLED
 
 
 def make_voice_file(text: str) -> Path:
@@ -74,8 +74,14 @@ async def send_long_text(update: Update, text: str) -> None:
 
 
 async def send_text_and_voice(update: Update, text: str) -> None:
-    """동일한 답변을 Telegram 텍스트와 오디오로 차례대로 보냅니다."""
+    """동일한 답변을 Telegram 텍스트와 오디오로 차례대로 보냅니다.
+
+    MARVIS_VOICE 가 꺼져 있으면 텍스트만 보냅니다. 오디오는 별도 메시지라,
+    켜 두면 답장 한 번에 알림이 두 번 옵니다.
+    """
     await send_long_text(update, text)
+    if not VOICE_ENABLED:
+        return
 
     voice_path = None
     try:

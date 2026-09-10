@@ -7,26 +7,34 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
 
-from .ai import generate_morning_briefing
 from .db import log_event, transaction
 from .memory import (
     get_due_recurrences,
     get_due_reminders,
+    get_schedules_between,
     mark_recurrence_fired,
     mark_reminded,
     skip_stale_recurrences,
 )
 from .memory import format_weekdays
-from .projects import get_briefing_projects, to_speech_friendly_name
+from .projects import get_briefing_projects
 from .secretary import format_sync_result
 from .secretary import sync as sync_secretary_projects
 from .settings import TELEGRAM_BOT_TOKEN
 from .storage import get_chat_id, get_last_briefing_date, save_last_briefing_date
 from .time_utils import now_kst, now_string
+from .voice import split_for_telegram
 
-# Siri "알림 읽어주기"가 메시지 하나를 다 읽어주도록, 프로젝트 현황은 스케쥴과
-# 합치지 않고 프로젝트당 별도 메시지로 몇 초 간격을 두고 보낸다.
-PROJECT_MESSAGE_INTERVAL_SECONDS = 5
+# 브리핑은 한 통입니다.
+#
+# 예전에는 인사 한 통에 이어 프로젝트마다 한 통씩(8개면 아홉 통) 5초 간격으로
+# 보냈습니다. Siri "알림 읽어주기"가 메시지 하나를 끊지 않고 읽어주게 하려던
+# 것인데, 음성을 쓰지 않게 되면서 남은 것은 아침마다 쌓이는 알림 아홉 개뿐이라
+# 정작 무엇이 왔는지 알아보기 어려웠습니다.
+_WEEKDAY_NAMES = "월화수목금토일"
+
+# 알림 시각이 없는 일정. 시각 칸을 비우면 줄이 어긋나서 눈에 안 들어옵니다.
+_NO_TIME = "--:--"
 
 # 브리핑 예정 시각을 이만큼 넘겨서 켜졌다면 "좋은 아침"을 보내지 않습니다.
 BRIEFING_WINDOW = timedelta(hours=2)
@@ -54,6 +62,71 @@ def send_proactive_telegram_message(text: str) -> bool:
         return False
 
 
+def send_proactive_long_message(text: str) -> bool:
+    """상한을 넘는 브리핑도 잘리지 않게 나눠 보냅니다.
+
+    sendMessage는 4096자를 넘으면 400을 돌려주고, 그러면 그날 브리핑은
+    통째로 사라집니다. 프로젝트가 서른 개까지 늘어난 지금은 상한에 닿을 수
+    있는 길이입니다. 첫 조각이 실패하면 보낸 것으로 치지 않습니다.
+    """
+    chunks = split_for_telegram(text)
+    if not chunks:
+        return False
+    if not send_proactive_telegram_message(chunks[0]):
+        return False
+    for chunk in chunks[1:]:
+        send_proactive_telegram_message(chunk)
+    return True
+
+
+def _one_line(text: str) -> str:
+    """여러 줄짜리 내용을 브리핑 한 줄에 담습니다."""
+    return " ".join((text or "").split())
+
+
+def format_today_schedule_lines(today) -> list[str]:
+    """오늘 날짜로 저장된 일정을 시각 순으로 늘어놓습니다.
+
+    LLM에게 한 문장으로 요약시키지 않는 이유: 요약은 저장된 것과 달라질 수
+    있고, 모델이 503을 내면 브리핑 자체가 나가지 않았습니다(2026-09-10).
+    저장된 값을 그대로 옮기면 둘 다 일어나지 않습니다.
+    """
+    stamp = today.isoformat()
+    items = get_schedules_between(stamp, stamp)
+    if not items:
+        return ["  오늘 일정 없음"]
+
+    lines = []
+    for item in items:
+        reminder = item.get("reminder_at")
+        at = reminder[11:16] if reminder else _NO_TIME
+        lines.append(f"  {at}  {_one_line(item['content'])}")
+    return lines
+
+
+def format_briefing_project_lines() -> list[str]:
+    """브리핑에 실을 진행중 프로젝트와 다음 할 일."""
+    projects = get_briefing_projects()
+    if not projects:
+        return ["  진행중인 프로젝트 없음"]
+    return [
+        f"  - {project['name']}: {_one_line(project.get('next_steps')) or '다음 할 일 미정'}"
+        for project in projects
+    ]
+
+
+def build_briefing_message(current: datetime) -> str:
+    """하루치 브리핑 전체를 메시지 한 통으로 만듭니다."""
+    today = current.date()
+    weekday = _WEEKDAY_NAMES[today.weekday()]
+    return "\n".join(
+        [f"📋 {today.isoformat()} ({weekday}) 브리핑", "", "[오늘 일정]"]
+        + format_today_schedule_lines(today)
+        + ["", "[프로젝트]"]
+        + format_briefing_project_lines()
+    )
+
+
 def briefing_time_for(current: datetime) -> tuple[int, int] | None:
     """요일별 브리핑 예정 시각. 브리핑을 보내지 않는 날이면 None."""
     weekday = current.weekday()  # 월=0 ... 일=6
@@ -65,7 +138,7 @@ def briefing_time_for(current: datetime) -> tuple[int, int] | None:
 
 
 def send_morning_briefing_if_due(current: datetime) -> None:
-    """예정 시각이 지났고 오늘 아직 안 보냈다면 아침 브리핑을 생성해 보냅니다."""
+    """예정 시각이 지났고 오늘 아직 안 보냈다면 아침 브리핑을 한 통 보냅니다."""
     today = current.date().isoformat()
     if get_last_briefing_date() == today:
         return
@@ -100,22 +173,11 @@ def send_morning_briefing_if_due(current: datetime) -> None:
         # 동기화가 실패해도 어제까지의 상태로 브리핑은 나가야 합니다.
         logging.exception("SECRETARY 동기화 실패, 이전 상태로 브리핑합니다: %s", error)
 
-    try:
-        briefing = generate_morning_briefing()
-    except Exception as error:
-        logging.exception("Failed to generate morning briefing: %s", error)
-        return
-
-    message = f"좋은 아침입니다 마비스 매니저입니다. {briefing}"
-    if not send_proactive_telegram_message(message):
-        return
-
     projects = get_briefing_projects()
-    for project in projects:
-        time.sleep(PROJECT_MESSAGE_INTERVAL_SECONDS)
-        next_steps = project.get("next_steps") or "다음 할 일 미정"
-        speech_name = to_speech_friendly_name(project["name"])
-        send_proactive_telegram_message(f"{speech_name}: {next_steps}")
+    if not send_proactive_long_message(build_briefing_message(current)):
+        # 보내지 못했으면 오늘 보낸 것으로 적지 않습니다. 다음 순회에서
+        # (창 안이라면) 다시 시도합니다.
+        return
 
     save_last_briefing_date(today)
     with transaction() as tx:

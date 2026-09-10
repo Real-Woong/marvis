@@ -85,32 +85,3 @@ Marvis의 핵심 역할:
 """
     answer = get_client().generate_text(prompt)
     return answer or "죄송합니다. 답변을 생성하지 못했습니다."
-
-
-def generate_morning_briefing() -> str:
-    """사용자가 묻지 않아도 먼저 보내는 아침 브리핑 중 일정 요약 부분을 생성합니다.
-
-    프로젝트 현황은 Siri "알림 읽어주기"가 긴 메시지를 요약해버리는 것을 피하려고
-    이 함수에 포함하지 않고, 호출부(reminders.py)에서 프로젝트당 별도 메시지로 보낸다.
-    """
-    # ask_gemini와 달리 사용자 메시지가 없는 능동 발화이므로, 질문에 답하는
-    # 대신 오늘 일정을 요약해서 먼저 브리핑하라고 역할을 명확히 지정합니다.
-    archive_past_schedules()
-    active_schedules = format_schedule_by_date()
-    prompt = f"""
-너는 사용자의 개인 비서 'Marvis'야.
-지금은 한국 시간 {today_kst_date().isoformat()} 아침이고, 오늘 일정을 사람이 말하듯
-한 문장으로 브리핑해야 해.
-
-출력 형식을 반드시 그대로 지켜라:
-- 오늘 일정이 하나도 없으면 정확히 "오늘 아침 일정은 없습니다." 라고만 답한다.
-- 오늘 일정이 있으면 "오늘 아침 일정은 (내용)입니다." 형태의 문장으로, (내용) 자리에
-  우선순위 순으로 정리한 일정을 자연스럽게 채워 넣는다.
-- 인사말, 이모지, 부연 설명, 위 형식 이외의 문장은 절대 추가하지 않는다.
-- 답변은 한국어로 한다.
-
-오늘 날짜별 스케쥴:
-{active_schedules}
-"""
-    briefing = get_client().generate_text(prompt)
-    return briefing or "오늘 아침 일정은 확인하지 못했습니다."

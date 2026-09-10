@@ -218,13 +218,10 @@ class BriefingWindowTest(unittest.TestCase):
 
         self.reminders = reminders
         self._real_send = reminders.send_proactive_telegram_message
-        self._real_briefing = reminders.generate_morning_briefing
         reminders.send_proactive_telegram_message = lambda text: self.sent.append(text) or True
-        reminders.generate_morning_briefing = lambda: "오늘 아침 일정은 없습니다."
 
     def tearDown(self):
         self.reminders.send_proactive_telegram_message = self._real_send
-        self.reminders.generate_morning_briefing = self._real_briefing
 
     def _weekday_at(self, hour, minute):
         current = now_kst().replace(hour=hour, minute=minute, second=0, microsecond=0)
@@ -234,12 +231,44 @@ class BriefingWindowTest(unittest.TestCase):
 
     def test_no_briefing_long_after_the_scheduled_time(self):
         send_morning_briefing_if_due(self._weekday_at(14, 0))
-        self.assertEqual(self.sent, [], "오후에 '좋은 아침'이 나가면 안 됩니다")
+        self.assertEqual(self.sent, [], "오후에 지난 아침 브리핑이 나가면 안 됩니다")
 
     def test_briefing_inside_the_window(self):
         send_morning_briefing_if_due(self._weekday_at(8, 35))
         self.assertEqual(len(self.sent), 1)
-        self.assertIn("좋은 아침", self.sent[0])
+        self.assertIn("브리핑", self.sent[0])
+
+    def test_the_whole_briefing_is_one_message(self):
+        """프로젝트마다 한 통씩 보내던 것을 한 통으로 합쳤습니다.
+
+        아침에 아홉 통이 오면 무엇이 왔는지 알아보기 어렵고, 진짜 알림이
+        그 사이에 묻힙니다.
+        """
+        from marvis import projects
+
+        for name in ("Alpha", "Beta", "Gamma"):
+            created = projects.add_project(name, status=projects.STATUS_IN_PROGRESS)
+            projects.update_project(created["seq"], next_steps=f"{name} 다음 할 일")
+
+        send_morning_briefing_if_due(self._weekday_at(8, 35))
+
+        self.assertEqual(len(self.sent), 1, self.sent)
+        message = self.sent[0]
+        for name in ("Alpha", "Beta", "Gamma"):
+            self.assertIn(f"{name}: {name} 다음 할 일", message)
+        self.assertIn("[오늘 일정]", message)
+        self.assertIn("[프로젝트]", message)
+
+    def test_a_failed_send_is_not_marked_as_sent(self):
+        """전송이 실패했는데 보냈다고 적으면 그날 브리핑은 영영 안 옵니다."""
+        self.reminders.send_proactive_telegram_message = lambda text: False
+        send_morning_briefing_if_due(self._weekday_at(8, 35))
+
+        self.reminders.send_proactive_telegram_message = (
+            lambda text: self.sent.append(text) or True
+        )
+        send_morning_briefing_if_due(self._weekday_at(8, 40))
+        self.assertEqual(len(self.sent), 1)
 
     def test_sunday_has_no_briefing(self):
         current = now_kst()
