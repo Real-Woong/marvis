@@ -241,6 +241,40 @@ def strip_request_tail(text: str) -> str:
     return stripped or text.strip()
 
 
+# 문장 맨 앞의 날짜 표현입니다. 날짜는 schedule_date 칸에 따로 저장되므로,
+# 본문에까지 남으면 같은 정보가 두 군데 있게 됩니다. 문제는 그 둘이 어긋난다는
+# 것입니다 — 날짜 칸은 9/11로 고정인데 본문의 "내일"은 읽는 날마다 뜻이 바뀌어서,
+# 9월 11일 아침 브리핑에 "내일 학교가서 프린트하기"가 뜹니다.
+#
+# 맨 앞에서만 뗍니다. 가운데의 "내일"은 내용의 일부입니다
+# ("9/11 내일 갈 곳 미리 알아보기").
+#
+# 뒤에 공백이나 조사가 와야 날짜로 봅니다. 이 조건이 없으면 "내일배움카드
+# 신청하기"가 "배움카드 신청하기"가 됩니다.
+_LEADING_DATE = re.compile(
+    r"^\s*(?:20\d{2}[-./]\d{1,2}[-./]\d{1,2}"
+    r"|\d{1,2}월\s*\d{1,2}일"
+    r"|\d{1,2}[./]\d{1,2}"
+    r"|오늘|내일|모레)"
+    r"(?:까지|부터|에|은|는)?"
+    r"(?=[\s,·\-—:]|$)"
+    r"[\s,·\-—:]*"
+)
+
+
+def strip_leading_date(text: str) -> str:
+    """본문 맨 앞의 날짜 표현을 뗍니다.
+
+    날짜를 실제로 뽑아낸 경우에만 부르세요. 날짜 칸이 비어 있는데 본문에서까지
+    지우면 언제 할 일인지가 어디에도 남지 않습니다.
+    """
+    stripped = text.strip()
+    # 한 번만 뗍니다. 되풀이하면 "9/11 내일 갈 곳 미리 알아보기"에서 날짜에
+    # 이어 내용의 "내일"까지 먹습니다.
+    shortened = _LEADING_DATE.sub("", stripped, count=1).strip()
+    return shortened or stripped
+
+
 def detect_message_intent(text: str) -> str:
     """메세지가 저장 요철, 조회질문, 일반 대화 중 무엇인지 판별"""
     normalized = " ".join(text.lower().split())

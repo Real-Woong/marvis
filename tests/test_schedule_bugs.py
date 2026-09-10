@@ -36,6 +36,7 @@ from marvis.schedule_parser import (  # noqa: E402
     detect_message_intent,
     parse_item_refs,
     parse_recurrence_request,
+    strip_leading_date,
     strip_request_tail,
 )
 from marvis.settings import KST  # noqa: E402
@@ -511,7 +512,8 @@ class RequestTailIsNotPartOfTheContentTest(unittest.TestCase):
 
     def test_the_tail_is_stripped_from_what_is_saved(self):
         saved = memory.add_memory("내일 학교가서 재학증명서 프린트하기 기억해줘")
-        self.assertEqual(saved["content"], "내일 학교가서 재학증명서 프린트하기")
+        # 맨 앞의 "내일"은 아래 LeadingDate 쪽 규칙이 따로 뗍니다.
+        self.assertEqual(saved["content"], "학교가서 재학증명서 프린트하기")
 
     def test_stripping_does_not_change_the_date_or_the_type(self):
         """분류와 날짜는 원문에서 뽑아야 합니다.
@@ -522,7 +524,7 @@ class RequestTailIsNotPartOfTheContentTest(unittest.TestCase):
         self.assertEqual(saved["type"], "schedule")
         self.assertIsNotNone(saved["schedule_date"])
         self.assertIsNotNone(saved["reminder_at"])
-        self.assertEqual(saved["content"], "내일 9시에 통신사 전화")
+        self.assertEqual(saved["content"], "9시에 통신사 전화")
 
     def test_various_tails(self):
         for text, expected in (
@@ -542,6 +544,50 @@ class RequestTailIsNotPartOfTheContentTest(unittest.TestCase):
             strip_request_tail("내일 병원 가서 결과 알려줘야 함"),
             "내일 병원 가서 결과 알려줘야 함",
         )
+
+
+class LeadingDateIsNotPartOfTheContentTest(unittest.TestCase):
+    """본문에 남은 "내일"은 읽는 날마다 뜻이 바뀝니다.
+
+    날짜는 schedule_date 칸에 따로 있습니다. 본문에까지 남으면 9월 11일
+    아침 브리핑에 "내일 학교가서 프린트하기"가 떠서, 오늘 가라는 건지
+    내일 가라는 건지 알 수 없습니다.
+    """
+
+    def setUp(self):
+        _reset_database()
+
+    def test_the_date_is_kept_in_its_own_column_not_in_the_text(self):
+        saved = memory.add_memory("내일 학교가서 재학증명서 프린트하기 기억해줘")
+        self.assertEqual(saved["content"], "학교가서 재학증명서 프린트하기")
+        self.assertIsNotNone(saved["schedule_date"])
+
+    def test_leading_forms(self):
+        for text, expected in (
+            ("오늘 병원 가기", "병원 가기"),
+            ("내일은 수강신청", "수강신청"),
+            ("9월 11일 서류 제출", "서류 제출"),
+            ("2026-09-11 병원", "병원"),
+        ):
+            self.assertEqual(strip_leading_date(text), expected, text)
+
+    def test_only_the_front_is_stripped(self):
+        """가운데의 "내일"은 내용의 일부입니다."""
+        self.assertEqual(
+            strip_leading_date("9/11 내일 갈 곳 미리 알아보기"),
+            "내일 갈 곳 미리 알아보기",
+        )
+
+    def test_a_word_that_merely_starts_with_a_date_word_is_untouched(self):
+        """"내일배움카드"의 앞 두 글자를 날짜로 읽으면 안 됩니다."""
+        self.assertEqual(
+            strip_leading_date("내일배움카드 신청하기"), "내일배움카드 신청하기"
+        )
+
+    def test_nothing_is_stripped_when_no_date_was_extracted(self):
+        """날짜 칸이 비면 본문이 언제인지 아는 유일한 곳입니다."""
+        saved = memory.add_memory("모레쯤 생각해볼 아이디어")
+        self.assertIn("모레", saved["content"])
 
 
 class AgentLimitsTest(unittest.TestCase):

@@ -16,6 +16,7 @@ from .schedule_parser import (
     classify_memory,
     extract_reminder_datetime,
     extract_schedule_date,
+    strip_leading_date,
     strip_request_tail,
 )
 from .time_utils import now_string, today_kst_date
@@ -84,8 +85,14 @@ def add_memory(text: str, source: str = "telegram") -> dict:
         except ValueError:
             schedule_date = None
 
+    content = strip_request_tail(text)
+    if schedule_date:
+        # 날짜를 뽑아 둔 경우에만 본문에서 뗍니다. 날짜 칸이 비어 있는데
+        # 본문에서까지 지우면 언제 할 일인지가 어디에도 남지 않습니다.
+        content = strip_leading_date(content)
+
     return create_item(
-        content=strip_request_tail(text),
+        content=content,
         kind=memory_type,
         schedule_date=schedule_date,
         reminder_at=reminder_at,
