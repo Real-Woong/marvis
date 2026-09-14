@@ -20,9 +20,11 @@ from ..memory import (
     create_recurrence,
     delete_item,
     delete_recurrence,
+    find_same_recurrence,
     format_weekdays,
     get_item,
     get_schedules_between,
+    last_sent_dates,
     list_recurrences,
     mark_done,
     parse_weekdays,
@@ -658,6 +660,16 @@ def _save_recurring_schedule(
             "24시간제 HH:MM으로 보내세요. 예: 06:10",
         )
 
+    existing = find_same_recurrence(content, days, at_time)
+    if existing:
+        return {
+            "saved": False, "reason": "duplicate", "recurrence_seq": existing["seq"],
+            "message": (
+                f"같은 규칙 R{existing['seq']}이 이미 있어 새로 만들지 않았다. "
+                "사용자에게 이미 있다고 알려라."
+            ),
+        }
+
     rule = create_recurrence(
         content=content, weekdays=days, at_time=at_time, starts_on=starts_on,
         ends_on=ends_on, source=source,
@@ -679,6 +691,7 @@ def _save_recurring_schedule(
 )
 def _list_recurring_schedules(**_):
     rules = list_recurrences()
+    sent = last_sent_dates()
     return {
         "count": len(rules),
         "recurrences": [
@@ -691,7 +704,8 @@ def _list_recurring_schedules(**_):
                 "starts_on": rule["starts_on"],
                 "ends_on": rule["ends_on"],
                 "timezone": rule["timezone"],
-                "last_fired_on": rule["last_fired_on"],
+                # last_fired_on 은 건너뛴 날도 담아서 발송일로 보여주면 틀립니다.
+                "last_sent_on": sent.get(rule["id"]),
             }
             for rule in rules
         ],

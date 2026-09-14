@@ -237,8 +237,8 @@ class B3RecurringSchedulesAreFirstClassTest(unittest.TestCase):
         self.assertEqual(rules[0]["starts_on"], "2026-11-02")
         # 단발 레코드는 하나도 만들지 않았습니다.
         self.assertEqual(_item_count(), 0)
-        # 저장된 값을 그대로 되돌려 보여줍니다.
-        self.assertIn("월~금", replies[0].text)
+        # 저장된 값을 되돌려 보여줍니다.
+        self.assertIn("평일", replies[0].text)
         self.assertIn("06:10", replies[0].text)
 
     def test_the_rule_survives_a_read_back(self):
@@ -373,6 +373,89 @@ class RoutineWithoutWeekdayTest(unittest.TestCase):
         self.assertIn("기억했습니다", replies[0].text)
         # Siri 웹훅은 ack를 버리므로, 저장 확인은 ack가 아니어야 들립니다.
         self.assertFalse(replies[0].ack)
+
+
+class RecurrenceListIsReadableAndHonestTest(unittest.TestCase):
+    """2026-09-14. `!반복` 이 필드 덤프였고, 건너뛴 날을 '마지막 발송'으로 보였고,
+    같은 요청을 다시 보내면 같은 규칙이 하나 더 생겼다."""
+
+    def setUp(self):
+        _reset_database()
+
+    def test_skipped_day_is_not_shown_as_sent(self):
+        rule = memory.create_recurrence(
+            content="개념 암기", weekdays=list(range(7)), at_time="12:00",
+            starts_on="2026-09-14",
+        )
+        # 봇이 17시에 켜져 오늘 12:00을 건너뛴 상황입니다.
+        evening = datetime(2026, 9, 14, 17, 30, tzinfo=KST)
+        self.assertEqual(memory.skip_stale_recurrences(evening), 1)
+
+        self.assertEqual(memory.last_sent_dates(), {})
+        raw = memory.format_recurrences_raw()
+        self.assertIn("마지막 발송: 발송 이력 없음 (건너뜀: 2026-09-14)", raw)
+        self.assertIn("아직 보낸 적 없음", memory.format_recurrences(evening))
+
+        # 다음 날 실제로 보내면 그날이 발송일입니다.
+        self.assertTrue(memory.mark_recurrence_fired(rule["id"], "2026-09-15"))
+        self.assertEqual(memory.last_sent_dates(), {rule["id"]: "2026-09-15"})
+        listed = tools.execute("list_recurring_schedules", {})
+        self.assertEqual(listed["recurrences"][0]["last_sent_on"], "2026-09-15")
+
+    def test_list_groups_active_upcoming_and_ended(self):
+        memory.create_recurrence(content="보고서 확인", weekdays=[0, 1, 2, 3, 4],
+                                 at_time="05:10", starts_on="2026-09-07",
+                                 ends_on="2026-09-10")
+        memory.create_recurrence(content="보고서 확인", weekdays=[0, 1, 2, 3, 4],
+                                 at_time="06:10", starts_on="2026-11-02")
+        memory.create_recurrence(content="개념 암기", weekdays=list(range(7)),
+                                 at_time="12:00", starts_on="2026-09-14")
+        text = memory.format_recurrences(datetime(2026, 9, 14, 17, 30, tzinfo=KST))
+
+        self.assertIn("반복 알림 1건 울리는 중", text)
+        self.assertIn("[R3] 매일 12:00  개념 암기\n     다음 내일 12:00", text)
+        self.assertIn("시작 전\n[R2] 평일 06:10", text)
+        self.assertIn("끝난 것\n[R1] 평일 05:10", text)
+        self.assertIn("9/10에 끝남", text)
+        # 확인용 필드 덤프는 `!원본` 쪽에만 남습니다.
+        self.assertNotIn("Asia/Seoul", text)
+
+    def test_recurrence_command_uses_the_readable_list(self):
+        memory.create_recurrence(content="개념 암기", weekdays=list(range(7)),
+                                 at_time="12:00", starts_on="2026-09-14")
+        replies = list(core.handle_message("!반복"))
+        self.assertIn("[R1] 매일 12:00  개념 암기", replies[0].text)
+
+    def test_same_request_twice_makes_one_rule(self):
+        text = "반복 루틴에 “12:00 선대, 컴아, 운체 개념 암기” 추가해줘"
+        list(core.handle_message(text))
+        replies = list(core.handle_message(text))
+        # 쉼표 띄어쓰기만 다른 것도 같은 규칙입니다.
+        list(core.handle_message("매일 12:00 선대,컴아,운체 개념 암기 반복"))
+
+        self.assertEqual(len(memory.list_recurrences()), 1)
+        self.assertIn("이미 같은 반복 알림이 있어서", replies[0].text)
+
+    def test_different_time_is_a_different_rule(self):
+        list(core.handle_message("매일 12:00 개념 암기 반복"))
+        list(core.handle_message("매일 21:00 개념 암기 반복"))
+        self.assertEqual(len(memory.list_recurrences()), 2)
+
+    def test_ended_rule_does_not_block_a_new_one(self):
+        memory.create_recurrence(content="개념 암기", weekdays=list(range(7)),
+                                 at_time="12:00", starts_on="2020-01-01",
+                                 ends_on="2020-12-31")
+        list(core.handle_message("매일 12:00 개념 암기 반복"))
+        self.assertEqual(len(memory.list_recurrences()), 2)
+
+    def test_llm_tool_does_not_duplicate_either(self):
+        args = {"content": "개념 암기", "weekdays": [0, 1, 2, 3, 4, 5, 6],
+                "at_time": "12:00", "starts_on": "2026-09-14"}
+        tools.execute("save_recurring_schedule", args)
+        second = tools.execute("save_recurring_schedule", dict(args, at_time="12:0"))
+        self.assertEqual(len(memory.list_recurrences()), 1)
+        self.assertFalse(second["saved"])
+        self.assertEqual(second["reason"], "duplicate")
 
 
 class B4RawOutputMatchesRecordsTest(unittest.TestCase):

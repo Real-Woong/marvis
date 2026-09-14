@@ -33,7 +33,9 @@ from .memory import (
     create_recurrence,
     delete_item,
     delete_recurrence,
-    format_recurrences_raw,
+    find_same_recurrence,
+    format_recurrence_lines,
+    format_recurrences,
     format_schedule_by_date,
     format_schedule_raw,
     format_weekdays,
@@ -251,6 +253,16 @@ def _handle_recurrence_request(recurrence: dict, text: str, source: str) -> Repl
             "알림에 실을 내용을 한 줄로 알려주세요."
         )
 
+    # 같은 문장을 다시 보내도 규칙이 둘이 되지 않게 합니다. 둘이 되면 매일
+    # 같은 알림이 두 통 옵니다.
+    existing = find_same_recurrence(content, recurrence["weekdays"], recurrence["at_time"])
+    if existing:
+        _log_turn(text, source, "recurrence.duplicate", {"seq": existing["seq"]})
+        return Reply(
+            "이미 같은 반복 알림이 있어서 새로 만들지 않았습니다.\n\n"
+            + format_recurrence_lines([existing])
+        )
+
     rule = create_recurrence(
         content=content,
         weekdays=recurrence["weekdays"],
@@ -272,7 +284,7 @@ def _handle_recurrence_request(recurrence: dict, text: str, source: str) -> Repl
     header = "반복 규칙으로 저장했습니다."
     if recurrence.get("assumed_daily"):
         header += " 요일을 적지 않으셔서 매일로 넣었습니다."
-    return Reply(header + "\n\n" + format_recurrences_raw(saved))
+    return Reply(header + "\n\n" + format_recurrence_lines(saved))
 
 
 def _recurrence_needs_details(text: str, source: str) -> Reply:
@@ -549,7 +561,7 @@ def _handle_with_regex(text: str, source: str) -> Iterator[Reply]:
 
     if text in ("!반복", "!recur"):
         _log_turn(text, source, "command.recurrences")
-        yield Reply(format_recurrences_raw())
+        yield Reply(format_recurrences())
         return
 
     note = parse_project_note(text)

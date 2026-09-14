@@ -91,7 +91,8 @@ CREATE TABLE IF NOT EXISTS recurrences (
     starts_on     TEXT NOT NULL,   -- YYYY-MM-DD
     ends_on       TEXT,            -- YYYY-MM-DD. NULL 이면 종료일 없음
     timezone      TEXT NOT NULL DEFAULT 'Asia/Seoul',
-    -- 마지막으로 실제 발송한 날(YYYY-MM-DD). 하루 한 번만 울리게 하는 자물쇠입니다.
+    -- 그날을 처리한 날(YYYY-MM-DD). 하루 한 번만 울리게 하는 자물쇠입니다.
+    -- 보낸 날과 건너뛴 날이 같이 들어갑니다. 실제 발송일은 recurrence.fired 이벤트에 있습니다.
     last_fired_on TEXT,
     archived      INTEGER NOT NULL DEFAULT 0,
     archived_at   TEXT,

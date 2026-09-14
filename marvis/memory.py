@@ -19,7 +19,7 @@ from .schedule_parser import (
     strip_leading_date,
     strip_request_tail,
 )
-from .time_utils import now_string, today_kst_date
+from .time_utils import now_kst, now_string, today_kst_date
 
 WEEKDAY_NAMES = ["월", "화", "수", "목", "금", "토", "일"]
 
@@ -480,6 +480,40 @@ def format_weekdays(weekdays: str) -> str:
     return ",".join(WEEKDAY_NAMES[day] for day in days)
 
 
+def _same_content(text: str) -> str:
+    """띄어쓰기·쉼표만 다른 내용을 같은 것으로 봅니다("선대,컴아" = "선대, 컴아")."""
+    return "".join(character for character in text.lower()
+                   if not character.isspace() and character not in ",.·")
+
+
+def _normalize_time(at_time: str) -> str:
+    hour, _, minute = str(at_time).partition(":")
+    try:
+        return f"{int(hour):02d}:{int(minute):02d}"
+    except ValueError:
+        return str(at_time)
+
+
+def find_same_recurrence(content: str, weekdays, at_time: str) -> dict | None:
+    """요일·시각·내용이 같은 살아 있는 규칙이 이미 있으면 돌려줍니다.
+
+    같은 문장을 두 번 보내면 규칙이 두 개 생기고, 매일 같은 알림이 두 통
+    옵니다. 이미 끝난 규칙(종료일이 지남)은 같은 것으로 보지 않습니다 —
+    다시 시작하려는 것일 수 있습니다.
+    """
+    days = ",".join(str(day) for day in parse_weekdays(weekdays))
+    time_key = _normalize_time(at_time)
+    content_key = _same_content(content)
+    today = today_kst_date().isoformat()
+    for rule in list_recurrences():
+        if rule["ends_on"] and rule["ends_on"] < today:
+            continue
+        if (rule["weekdays"] == days and _normalize_time(rule["at_time"]) == time_key
+                and _same_content(rule["content"]) == content_key):
+            return rule
+    return None
+
+
 def create_recurrence(
     content: str,
     weekdays,
@@ -658,6 +692,21 @@ def get_due_recurrences(current: datetime, window_minutes: int = 120) -> list[di
     return due
 
 
+def last_sent_dates() -> dict[str, str]:
+    """규칙 id → 실제로 알림을 보낸 마지막 날.
+
+    `last_fired_on` 은 "그날은 처리했다"는 자물쇠라, 보낸 날과 건너뛴 날이
+    같이 들어갑니다. 그 값을 "마지막 발송"이라고 보여주면, 봇이 늦게 켜져
+    건너뛴 날도 보낸 것처럼 보입니다(2026-09-14 R3). 실제 발송은
+    `recurrence.fired` 이벤트에만 남으므로 거기서 읽습니다.
+    """
+    rows = get_connection().execute(
+        "SELECT entity_id, MAX(json_extract(payload, '$.date')) AS day FROM events"
+        " WHERE kind = 'recurrence.fired' GROUP BY entity_id"
+    ).fetchall()
+    return {row["entity_id"]: row["day"] for row in rows}
+
+
 def mark_recurrence_fired(recurrence_id: str, day: str) -> bool:
     """그날의 발송을 기록합니다. 같은 날 두 번 울리지 않게 하는 자물쇠입니다."""
     with transaction() as tx:
@@ -719,10 +768,15 @@ def format_recurrences_raw(rules: list[dict] | None = None) -> str:
     rules = list_recurrences() if rules is None else rules
     if not rules:
         return "저장된 반복 규칙이 없습니다."
+    sent = last_sent_dates()
     lines = []
     for rule in rules:
         ends = rule["ends_on"] or "종료일 없음"
-        fired = rule["last_fired_on"] or "발송 이력 없음"
+        last_sent = sent.get(rule["id"])
+        fired = last_sent or "발송 이력 없음"
+        # 자물쇠 날짜가 발송일과 다르면 그날은 보내지 않고 건너뛴 것입니다.
+        if rule["last_fired_on"] and rule["last_fired_on"] != last_sent:
+            fired += f" (건너뜀: {rule['last_fired_on']})"
         lines.append(
             f"[R{rule['seq']}] recurrence | {format_weekdays(rule['weekdays'])}"
             f" ({rule['weekdays']}) | {rule['at_time']} {rule['timezone']}"
@@ -730,6 +784,95 @@ def format_recurrences_raw(rules: list[dict] | None = None) -> str:
             f"      {rule['content']}"
         )
     return "\n".join(lines)
+
+
+# ------------------------------------------------------------------ 읽기 쉬운 출력
+#
+# `!반복` 은 "지금 무엇이 울리나"를 보려고 치는 명령입니다. 저장 필드 그대로의
+# 출력(`(0,1,2,3,4)`, `Asia/Seoul`)은 확인용이라 `!원본` 에 남기고, 여기서는
+# 사람 말로 보여줍니다.
+
+def _weekday_label(weekdays: str) -> str:
+    days = [int(part) for part in weekdays.split(",") if part != ""]
+    if days == list(range(7)):
+        return "매일"
+    if days == [0, 1, 2, 3, 4]:
+        return "평일"
+    if days == [5, 6]:
+        return "주말"
+    return format_weekdays(weekdays)
+
+
+def _short_date(value: str, with_weekday: bool = False) -> str:
+    day = date.fromisoformat(value)
+    text = f"{day.month}/{day.day}"
+    return f"{text}({WEEKDAY_NAMES[day.weekday()]})" if with_weekday else text
+
+
+def _next_label(moment: datetime, current: datetime) -> str:
+    offset = (moment.date() - current.date()).days
+    if offset == 0:
+        return f"오늘 {moment:%H:%M}"
+    if offset == 1:
+        return f"내일 {moment:%H:%M}"
+    return f"{_short_date(moment.date().isoformat(), with_weekday=True)} {moment:%H:%M}"
+
+
+def format_recurrence_lines(rules: list[dict], current: datetime | None = None) -> str:
+    """규칙마다 두 줄: 무엇이 언제 울리는지, 그리고 다음 알림·기간·발송 기록."""
+    current = current or now_kst()
+    sent = last_sent_dates()
+    today = current.date().isoformat()
+    lines = []
+    for rule in rules:
+        lines.append(
+            f"[R{rule['seq']}] {_weekday_label(rule['weekdays'])} {rule['at_time']}"
+            f"  {rule['content']}"
+        )
+        details = []
+        if rule["ends_on"] and rule["ends_on"] < today:
+            details.append(f"{_short_date(rule['ends_on'])}에 끝남")
+        else:
+            upcoming = next_occurrence(rule, current)
+            if upcoming:
+                details.append(f"다음 {_next_label(upcoming, current)}")
+            if rule["starts_on"] > today:
+                details.append(f"{_short_date(rule['starts_on'])}부터")
+            if rule["ends_on"]:
+                details.append(f"{_short_date(rule['ends_on'])}까지")
+        last_sent = sent.get(rule["id"])
+        details.append(
+            f"마지막 발송 {_short_date(last_sent)}" if last_sent else "아직 보낸 적 없음"
+        )
+        lines.append("     " + " · ".join(details))
+    return "\n".join(lines)
+
+
+def format_recurrences(current: datetime | None = None) -> str:
+    """`!반복` 출력. 지금 울리는 것 / 시작 전 / 끝난 것으로 나눕니다."""
+    current = current or now_kst()
+    rules = list_recurrences()
+    if not rules:
+        return "저장된 반복 알림이 없습니다."
+    today = current.date().isoformat()
+    ended = [rule for rule in rules if rule["ends_on"] and rule["ends_on"] < today]
+    upcoming = [rule for rule in rules if rule not in ended and rule["starts_on"] > today]
+    active = [rule for rule in rules if rule not in ended and rule not in upcoming]
+    # 하루 안에서 울리는 순서대로 봅니다.
+    active.sort(key=lambda rule: (_normalize_time(rule["at_time"]), rule["seq"]))
+
+    blocks = [f"반복 알림 {len(active)}건 울리는 중"]
+    for title, group in (("", active), ("시작 전", upcoming), ("끝난 것", ended)):
+        if not group:
+            continue
+        if title:
+            blocks.append(f"\n{title}")
+        else:
+            blocks.append("")
+        blocks.append(format_recurrence_lines(group, current))
+    if ended:
+        blocks.append(f"\n끝난 것은 'R{ended[0]['seq']} 지워줘'로 정리할 수 있습니다.")
+    return "\n".join(blocks)
 
 
 def format_schedule_raw() -> str:
