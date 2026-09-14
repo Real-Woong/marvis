@@ -310,6 +310,71 @@ class B3RecurringSchedulesAreFirstClassTest(unittest.TestCase):
         self.assertEqual(memory.get_recurrence(rule["seq"])["at_time"], "06:10")
 
 
+class RoutineWithoutWeekdayTest(unittest.TestCase):
+    """2026-09-14. "반복 루틴에 12:00 ... 추가해줘"가 내일 12:00 단발로 저장됐다.
+
+    요일이 없어 반복 파서가 None을 돌려줬고, 호출부는 되묻지 않고 단발 저장으로
+    흘려보냈다. 이어서 도구 없는 LLM이 "저장할 수 없습니다"라고 한 통 더 보냈다.
+    """
+
+    TEXT = "반복 루틴에 “12:00 선대, 컴아, 운체 개념 암기” 추가해줘"
+
+    def setUp(self):
+        _reset_database()
+        self._real_ask = core.ask_gemini
+        core.ask_gemini = lambda text: "[LLM 답변]"
+
+    def tearDown(self):
+        core.ask_gemini = self._real_ask
+
+    def test_routine_without_weekday_becomes_a_daily_rule(self):
+        replies = list(core.handle_message(self.TEXT, source="telegram"))
+
+        self.assertEqual(_item_count(), 0)
+        rules = memory.list_recurrences()
+        self.assertEqual(len(rules), 1)
+        self.assertEqual(rules[0]["weekdays"], "0,1,2,3,4,5,6")
+        self.assertEqual(rules[0]["at_time"], "12:00")
+        self.assertEqual(rules[0]["content"], "선대, 컴아, 운체 개념 암기")
+        # 매일로 넣었다는 가정을 사용자에게 말합니다. LLM 답은 뒤따르지 않습니다.
+        self.assertEqual(len(replies), 1)
+        self.assertIn("매일로 넣었습니다", replies[0].text)
+
+    def test_compact_weekdays_are_not_read_as_daily(self):
+        """도움말 예시 그대로입니다. 매일 기본값이 이걸 삼키면 안 됩니다."""
+        list(core.handle_message("월수금 20시 운동 반복, 2026-12-31까지"))
+        rules = memory.list_recurrences()
+        self.assertEqual(len(rules), 1)
+        self.assertEqual(rules[0]["weekdays"], "0,2,4")
+        self.assertEqual(rules[0]["content"], "운동")
+        self.assertEqual(rules[0]["ends_on"], "2026-12-31")
+
+    def test_particles_inside_words_are_kept(self):
+        list(core.handle_message("매일 21시 프로젝트 로그 정리 반복"))
+        self.assertEqual(memory.list_recurrences()[0]["content"], "프로젝트 로그 정리")
+
+    def test_missing_details_ask_instead_of_saving_a_one_off(self):
+        for text in ("반복 루틴에 선대 개념 암기 추가해줘", "매주 12시 청소 반복 알림"):
+            replies = list(core.handle_message(text))
+            self.assertEqual(len(replies), 1, text)
+            self.assertIn("아직 저장하지 않았습니다", replies[0].text, text)
+        self.assertEqual(_item_count(), 0)
+        self.assertEqual(memory.list_recurrences(), [])
+
+    def test_one_offs_that_merely_mention_weekends_or_loops_still_save(self):
+        list(core.handle_message("이번 주말에 영화 보기 기억해줘"))
+        list(core.handle_message("12:00에 반복문 공부하기 알려줘"))
+        self.assertEqual(_item_count(), 2)
+        self.assertEqual(memory.list_recurrences(), [])
+
+    def test_a_save_is_confirmed_once_without_an_llm_follow_up(self):
+        replies = list(core.handle_message("내일 병원 예약 확인해야 해"))
+        self.assertEqual(len(replies), 1)
+        self.assertIn("기억했습니다", replies[0].text)
+        # Siri 웹훅은 ack를 버리므로, 저장 확인은 ack가 아니어야 들립니다.
+        self.assertFalse(replies[0].ack)
+
+
 class B4RawOutputMatchesRecordsTest(unittest.TestCase):
     """B4. 요약 출력이 실제 레코드와 다르다."""
 

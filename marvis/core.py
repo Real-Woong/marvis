@@ -64,9 +64,11 @@ from .schedule_parser import (
     INSTRUCTION_SHOW_RAW,
     detect_instruction,
     detect_message_intent,
+    mentions_recurrence,
     parse_item_refs,
     parse_recurrence_refs,
     parse_recurrence_request,
+    strip_request_tail,
 )
 from .secretary import WriteBackError
 from .settings import ROUTER_MODE
@@ -267,24 +269,60 @@ def _handle_recurrence_request(recurrence: dict, text: str, source: str) -> Repl
             f"반복 규칙을 저장했으나(R{rule['seq']}) 다시 읽어 확인하지 못했습니다. "
             "!반복 으로 확인해주세요."
         )
-    return Reply("반복 규칙으로 저장했습니다.\n\n" + format_recurrences_raw(saved))
+    header = "반복 규칙으로 저장했습니다."
+    if recurrence.get("assumed_daily"):
+        header += " 요일을 적지 않으셔서 매일로 넣었습니다."
+    return Reply(header + "\n\n" + format_recurrences_raw(saved))
+
+
+def _recurrence_needs_details(text: str, source: str) -> Reply:
+    """반복하겠다는 말은 있는데 규칙을 만들 재료가 모자랄 때 되묻습니다.
+
+    단발로 저장하지 않는 것이 핵심입니다. 2026-09-14에 "반복 루틴에 12:00 ...
+    추가해줘"가 내일 12:00 단발 한 건으로 저장되고 "기억했습니다"라고 답이
+    나갔습니다. 사용자는 루틴이 생긴 줄 압니다.
+    """
+    _log_turn(text, source, "recurrence.unclear")
+    return Reply(
+        "반복으로 넣으려 했는데 언제 알릴지(요일·시각)를 다 읽지 못해 "
+        "아직 저장하지 않았습니다.\n"
+        "'매일 12:00 개념 암기', '월수금 20시 운동 반복'처럼 적어 다시 보내주세요."
+    )
 
 
 # 반복 요청 문장에서 규칙을 나타내는 부분을 걷어내고 남는 것이 알림 내용입니다.
+#
+# 뒤에 붙는 조사(에, 로, 부터 ...)는 규칙 낱말 바로 뒤에 있을 때만 뗍니다.
+# 예전에는 "로", "에"를 문장 어디서든 지워서 "프로젝트 로그"가 "프 젝트 그"로
+# 저장됐습니다.
 _RECURRENCE_NOISE = re.compile(
-    r"(매일|매주|평일|주중|주말|날마다|요일마다|반복(\s*알림)?|정기적으로"
-    r"|[월화수목금토일]\s*[~\-]\s*[월화수목금토일]|[월화수목금토일]요일"
-    r"|\d{1,2}:\d{2}|\d{1,2}\s*시(\s*\d{1,2}\s*분)?|오전|오후|아침|저녁|밤"
-    r"|20\d{2}[-./]\d{1,2}[-./]\d{1,2}|\d{1,2}[./]\d{1,2}"
-    r"|\d{1,2}월\s*\d{1,2}일|부터|까지|에|으로|로|알려줘|알림)"
+    r"(?:반복(?:\s*(?:알림|루틴|일정))?|루틴|매일|매주|평일|주중|주말|날마다|요일마다|정기적으로"
+    r"|[월화수목금토일]\s*[~\-]\s*[월화수목금토일]|(?<![가-힣])[월화수목금토일]{2,7}(?![가-힣])"
+    r"|[월화수목금토일]요일(?:과|와)?"
+    r"|(?:(?:오전|오후|아침|낮|저녁|밤)\s*)?(?:\d{1,2}:\d{2}|\d{1,2}\s*시(?:\s*\d{1,2}\s*분)?)"
+    r"|20\d{2}[-./]\d{1,2}[-./]\d{1,2}|(?<!\d)\d{1,2}[./]\d{1,2}(?!\d)|\d{1,2}월\s*\d{1,2}일"
+    r"|(?<![가-힣])알림(?![가-힣]))"
+    r"(?:에는|에|으로|로|부터|까지|마다|마다요)?"
+    r"(?=[\s,.·:\-—\"'“”‘’)\]]|$)"
 )
+_QUOTES = re.compile(r"[\"'“”‘’]")
 
 
 def _recurrence_content(text: str) -> str:
-    """반복 요청 문장에서 '무엇을 알릴지'만 남깁니다."""
-    stripped = _RECURRENCE_NOISE.sub(" ", text)
-    stripped = re.sub(r"[·,\-—:]+", " ", stripped)
-    return " ".join(stripped.split()).strip()
+    """반복 요청 문장에서 '무엇을 알릴지'만 남깁니다.
+
+    내용 안의 쉼표는 남깁니다("선대, 컴아, 운체 개념 암기").
+    """
+    stripped = _QUOTES.sub(" ", text)
+    stripped = _RECURRENCE_NOISE.sub(" ", stripped)
+    stripped = " ".join(stripped.split())
+    # 규칙 낱말을 걷어낸 자리에 남은 쉼표·기호("운동 , 까지")를 정리합니다.
+    stripped = re.sub(r"\s+([,.·])", r"\1", stripped)
+    stripped = re.sub(r"(?:^|(?<=\s))[,.·:\-—]+(?=\s|$)", " ", stripped)
+    stripped = " ".join(stripped.split()).strip(" ,.·:-—")
+    if not stripped:
+        return ""
+    return strip_request_tail(stripped).strip(" ,.·:-—")
 
 
 def _answer_failure_message(error: Exception) -> str:
@@ -434,6 +472,7 @@ _ROUTE_TO_TOOL = {
     # 정규식이 "저장하지 않고 되묻는다"로 판단한 자리입니다. LLM이 무엇을
     # 했는지가 바로 이 경로의 관찰 대상이라, 고정된 정답을 두지 않습니다.
     "ambiguous": "__unknown__",
+    "recurrence.unclear": "__unknown__",
 }
 
 
@@ -460,7 +499,10 @@ def _classify_regex_route(text: str) -> str:
         return f"instruction.{instruction}"
     if parse_recurrence_request(text):
         return "recurrence"
-    return detect_message_intent(text)
+    intent = detect_message_intent(text)
+    if intent in ("save", "ambiguous") and mentions_recurrence(text):
+        return "recurrence.unclear"
+    return intent
 
 
 def _routes_agree(regex_route: str, llm_tool: str | None) -> bool:
@@ -539,6 +581,13 @@ def _handle_with_regex(text: str, source: str) -> Iterator[Reply]:
 
     intent = detect_message_intent(text)
 
+    # "반복 루틴에 개념 암기 추가해줘"처럼 되풀이하겠다는 말은 분명한데 시각이
+    # 없으면, 저장하려던 문장이라도 단발로 넣지 않습니다. 묻는 말("반복 알림
+    # 뭐 있어?")은 그대로 조회로 갑니다.
+    if intent in ("save", "ambiguous") and mentions_recurrence(text):
+        yield _recurrence_needs_details(text, source)
+        return
+
     if intent == "ambiguous":
         # 여러 항목이 섞인 메시지를 통째로 한 건으로 저장하지 않습니다.
         # 오탐 하나가 캘린더에 영구히 남는 비용이, 되묻는 비용보다 큽니다.
@@ -552,14 +601,19 @@ def _handle_with_regex(text: str, source: str) -> Iterator[Reply]:
         return
 
     if intent == "save":
+        # 저장 확인 한 통으로 끝냅니다. 예전에는 뒤이어 ask_gemini 답이 한 통 더
+        # 나갔는데, 그 모델에는 도구가 없어서 "저는 저장할 수 없습니다"라고
+        # 방금 한 저장을 부정하기도 했습니다(2026-09-14). 알림도 두 번 울립니다.
         saved = add_memory(text, source=source)
         _log_turn(text, source, "save", {"item_id": saved["id"], "type": saved["type"]})
         if saved.get("reminder_at"):
-            yield Reply(f"기억했습니다. 알림 시각: {saved['reminder_at']}", ack=True)
+            yield Reply(f"기억했습니다. 알림 시각: {saved['reminder_at']}")
         else:
             type_name = _MEMORY_TYPE_NAMES.get(saved.get("type"), "기억")
-            yield Reply(f"{type_name}으로 기억했습니다.", ack=True)
-    elif intent == "query":
+            yield Reply(f"{type_name}으로 기억했습니다.")
+        return
+
+    if intent == "query":
         _log_turn(text, source, "query")
         yield Reply("저장된 내용을 확인하고 있습니다...", ack=True)
     else:

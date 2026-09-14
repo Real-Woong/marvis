@@ -166,8 +166,16 @@ class SingleEntryPointTest(unittest.TestCase):
         self.assertIn("등록했습니다", replies[0].text)
         self.assertEqual(len(projects.load_projects()), 1)
 
-    def test_save_flow_yields_ack_then_answer(self):
+    def test_save_flow_yields_a_single_confirmation(self):
+        # 저장 뒤에 LLM 답을 덧붙이지 않습니다. 도구 없는 모델이 방금 한 저장을
+        # 부정했습니다(2026-09-14).
         replies = list(core.handle_message("내일 병원 예약 확인해야 해"))
+        self.assertEqual(len(replies), 1)
+        self.assertFalse(replies[0].ack)
+        self.assertIn("기억했습니다", replies[0].text)
+
+    def test_chat_flow_yields_ack_then_answer(self):
+        replies = list(core.handle_message("안녕 마비스"))
         self.assertEqual(len(replies), 2)
         self.assertTrue(replies[0].ack)
         self.assertFalse(replies[1].ack)

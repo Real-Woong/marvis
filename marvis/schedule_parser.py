@@ -205,6 +205,7 @@ _REQUEST_TAILS = (
     "기록해줘", "기록해 줘", "기록해주세요", "기록해",
     "등록해줘", "등록해 줘", "등록해주세요", "등록해",
     "추가해줘", "추가해 줘", "추가해주세요", "추가해",
+    "넣어줘", "넣어 줘", "넣어주세요",
     "리마인드해줘", "리마인드 해줘", "리마인드해", "리마인드",
     "알려줘", "알려 줘", "알려주세요", "알림 줘",
     "챙겨줘", "챙겨 줘", "챙겨주세요",
@@ -431,8 +432,20 @@ _WEEKDAY_GROUPS = {
 
 _RECURRENCE_MARKERS = [
     "반복", "매일", "매주", "평일", "주중", "주말", "날마다", "요일마다",
-    "월~금", "월-금", "월요일부터", "정기적으로",
+    "월~금", "월-금", "월요일부터", "정기적으로", "루틴",
 ]
+
+# 이 말이 있으면 되풀이하겠다는 뜻이 분명합니다. "평일"·"주말"은 여기 없습니다.
+# "이번 주말에 영화 보기"는 단발 일정이기 때문입니다.
+#
+# "반복문"은 코딩 이야기라 뺍니다.
+_EXPLICIT_RECURRENCE = re.compile(r"반복(?!문|적)|루틴|매일|매주|날마다|요일마다|정기적으로")
+
+# 요일 없이 "반복 루틴에 12:00 개념 암기 추가해줘"라고 하면 매일입니다.
+# 예전에는 요일을 못 찾았다고 None을 돌려줬고, 호출부가 되묻지 않고 단발 저장으로
+# 흘려보내서 "내일 12:00 한 번"이 됐습니다(2026-09-14, item 102).
+# "매주"는 요일 없이는 뜻이 없으므로 여기 넣지 않습니다.
+_DAILY_WHEN_NO_WEEKDAY = re.compile(r"반복(?!문|적)|루틴")
 
 
 def _extract_weekdays(text: str) -> list[int] | None:
@@ -449,6 +462,12 @@ def _extract_weekdays(text: str) -> list[int] | None:
         if first <= last:
             return list(range(first, last + 1))
         return list(range(first, 7)) + list(range(0, last + 1))
+
+    # '월수금', '화목' 처럼 붙여 쓴 경우. 요일 글자만으로 된 낱말이어야 합니다.
+    # 한 글자는 보지 않습니다("일", "월"은 흔한 낱말입니다).
+    match = re.search(r"(?<![가-힣])([월화수목금토일]{2,7})(?![가-힣])", text)
+    if match and len(set(match.group(1))) == len(match.group(1)):
+        return sorted(names.index(day) for day in match.group(1))
 
     # '월요일', '수요일과 금요일' 처럼 낱개로 적은 경우.
     found = sorted({names.index(day) for day in re.findall(r"([월화수목금토일])요일", text)})
@@ -511,6 +530,7 @@ def parse_recurrence_request(text: str) -> dict | None:
 
     돌려주는 dict:
         weekdays   [0..6]   월=0
+        assumed_daily  요일을 적지 않아 매일로 읽었는지
         at_time    'HH:MM'
         starts_on  'YYYY-MM-DD'  (없으면 오늘)
         ends_on    'YYYY-MM-DD' | None
@@ -520,12 +540,26 @@ def parse_recurrence_request(text: str) -> dict | None:
 
     weekdays = _extract_weekdays(text)
     at_time = _extract_time_of_day(text)
+    assumed_daily = False
+    if not weekdays and _DAILY_WHEN_NO_WEEKDAY.search(text) and "매주" not in text:
+        weekdays = list(_WEEKDAY_GROUPS["매일"])
+        assumed_daily = True
     if not weekdays or not at_time:
         return None
 
     return {
         "weekdays": weekdays,
+        "assumed_daily": assumed_daily,
         "at_time": at_time,
         "starts_on": _extract_boundary(text, "부터") or today_kst_date().isoformat(),
         "ends_on": _extract_boundary(text, "까지"),
     }
+
+
+def mentions_recurrence(text: str) -> bool:
+    """되풀이하겠다는 말이 분명히 있는지.
+
+    parse_recurrence_request가 None인데 이게 True면, 규칙을 만들 재료(시각,
+    요일)가 모자란 것입니다. 단발로 저장하면 안 되고 되물어야 합니다.
+    """
+    return bool(_EXPLICIT_RECURRENCE.search(text))

@@ -247,8 +247,8 @@ class RouterModeTest(unittest.TestCase):
         os.environ["MARVIS_ROUTER"] = "regex"
         core.ask_gemini = lambda text: "[정규식 경로 답변]"
         replies = list(core.handle_message("내일 병원 예약 확인해야 해"))
-        self.assertEqual(len(replies), 2)
-        self.assertTrue(replies[0].ack)
+        self.assertEqual(len(replies), 1)
+        self.assertIn("기억했습니다", replies[0].text)
 
     def test_llm_mode_yields_ack_then_single_answer(self):
         os.environ["MARVIS_ROUTER"] = "llm"
