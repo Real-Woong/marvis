@@ -38,6 +38,8 @@ Telegram 기반 개인 AI 비서 Marvis를 Stack Chan에 탑재해, 화면·표�
 
 ### 단계
 
+주 단위 실행 계획(토요일 개발 / 일요일 릴스)은 [`Stack-Chan/DEV_ROADMAP.md`](../Stack-Chan/DEV_ROADMAP.md).
+
 | 단계 | 내용 | 펌웨어 | 새로 관리할 것 |
 |---|---|---|---|
 | 0. 확인 | StackChan World 앱에서 외부 MCP 서버(엔드포인트) 등록이 되는지, 기기가 맥미니에 닿는지(같은 LAN / Tailscale 불가 시 대안) | 순정 | 없음 |
